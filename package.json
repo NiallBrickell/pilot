@@ -1,0 +1,12 @@
+{
+  "name": "pilot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "evaluator": "node evaluator.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.81"
+  }
+}

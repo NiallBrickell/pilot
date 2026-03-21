@@ -1,0 +1,12 @@
+# Binary
+pilot
+!cmd/
+
+# Node
+node_modules/
+
+# Runtime state (belongs in ~/.pilot/)
+state.json
+*.pid
+.auth-cache
+.env

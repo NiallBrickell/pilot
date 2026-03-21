@@ -1,0 +1,211 @@
+// Pilot evaluator sidecar — long-running HTTP server that uses the Claude Agent SDK
+// for haiku evaluations. Called by pilot serve instead of spawning claude -p.
+
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import { createServer } from "http";
+import { readFileSync, existsSync } from "fs";
+import { resolve, dirname, join } from "path";
+import { fileURLToPath } from "url";
+import { homedir } from "os";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Load .env — check multiple locations in priority order
+function loadEnv() {
+  const candidates = [
+    process.env.PILOT_HOME ? join(process.env.PILOT_HOME, ".env") : null,
+    join(homedir(), ".pilot", ".env"),
+    resolve(__dirname, ".env"),
+    resolve(__dirname, "../.env"),
+  ].filter(Boolean);
+
+  for (const envPath of candidates) {
+    if (!existsSync(envPath)) continue;
+    try {
+      const env = readFileSync(envPath, "utf8");
+      for (const line of env.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const eqIdx = trimmed.indexOf("=");
+        if (eqIdx === -1) continue;
+        const key = trimmed.slice(0, eqIdx);
+        const val = trimmed.slice(eqIdx + 1);
+        if (!process.env[key]) process.env[key] = val;
+      }
+      return;
+    } catch {}
+  }
+}
+loadEnv();
+
+const PORT = parseInt(process.env.PILOT_EVALUATOR_PORT || "9722", 10);
+
+const APPROVAL_SCHEMA = {
+  type: "json_schema",
+  schema: {
+    type: "object",
+    properties: {
+      decision: { type: "string", enum: ["approve", "deny"] },
+      reason: { type: "string" },
+    },
+    required: ["decision", "reason"],
+    additionalProperties: false,
+  },
+};
+
+const IDLE_SCHEMA = {
+  type: "json_schema",
+  schema: {
+    type: "object",
+    properties: {
+      should_respond: { type: "boolean" },
+      message: { type: "string" },
+      confidence: { type: "number" },
+      reasoning: { type: "string" },
+    },
+    required: ["should_respond", "message", "confidence", "reasoning"],
+    additionalProperties: false,
+  },
+};
+
+// Concurrency limiter
+const MAX_CONCURRENT = 4;
+let active = 0;
+const queue = [];
+
+function acquireSem() {
+  return new Promise((resolve) => {
+    if (active < MAX_CONCURRENT) {
+      active++;
+      resolve();
+    } else {
+      queue.push(resolve);
+    }
+  });
+}
+
+function releaseSem() {
+  if (queue.length > 0) {
+    const next = queue.shift();
+    next();
+  } else {
+    active--;
+  }
+}
+
+async function withTimeout(promise, ms, fallback) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function evaluateApproval(systemPrompt, toolName, toolInput) {
+  const userMessage = `Tool: ${toolName}\nInput: ${toolInput.slice(0, 2000)}`;
+
+  return withTimeout((async () => {
+    for await (const msg of query({
+      prompt: userMessage,
+      options: {
+        systemPrompt,
+        model: "claude-haiku-4-5",
+        allowedTools: [],
+        maxTurns: 3,
+        permissionMode: "dontAsk",
+        outputFormat: APPROVAL_SCHEMA,
+      },
+    })) {
+      if (msg.type === "result" && msg.structured_output) {
+        return msg.structured_output;
+      }
+    }
+    return { decision: "deny", reason: "no structured output returned" };
+  })(), 15000, { decision: "deny", reason: "evaluation timed out" });
+}
+
+async function evaluateIdle(systemPrompt, transcriptContext) {
+  const userMessage = `Here is the recent Claude Code output. Claude has stopped and is showing the input prompt. Should I auto-respond?\n\n---\n${transcriptContext.slice(0, 4000)}`;
+
+  return withTimeout((async () => {
+    for await (const msg of query({
+      prompt: userMessage,
+      options: {
+        systemPrompt,
+        model: "claude-haiku-4-5",
+        allowedTools: [],
+        maxTurns: 3,
+        permissionMode: "dontAsk",
+        outputFormat: IDLE_SCHEMA,
+      },
+    })) {
+      if (msg.type === "result" && msg.structured_output) {
+        return msg.structured_output;
+      }
+    }
+    return { should_respond: false, message: "", confidence: 0, reasoning: "no structured output returned" };
+  })(), 15000, { should_respond: false, message: "", confidence: 0, reasoning: "evaluation timed out" });
+}
+
+async function handleRequest(req, res) {
+  if (req.method === "GET" && req.url === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, active, queued: queue.length }));
+    return;
+  }
+
+  if (req.method !== "POST") {
+    res.writeHead(405);
+    res.end("method not allowed");
+    return;
+  }
+
+  const body = await new Promise((resolve) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(JSON.parse(Buffer.concat(chunks).toString())));
+  });
+
+  await acquireSem();
+  try {
+    let result;
+    if (req.url === "/evaluate-approval") {
+      result = await evaluateApproval(body.system_prompt, body.tool_name, body.tool_input);
+    } else if (req.url === "/evaluate-idle") {
+      result = await evaluateIdle(body.system_prompt, body.transcript_context);
+    } else {
+      res.writeHead(404);
+      res.end("not found");
+      return;
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(result));
+  } catch (err) {
+    console.error("Evaluation error:", err.message);
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ decision: "deny", reason: `error: ${err.message}` }));
+  } finally {
+    releaseSem();
+  }
+}
+
+const server = createServer(handleRequest);
+server.listen(PORT, () => {
+  console.log(`Pilot evaluator listening on port ${PORT}`);
+});
+
+process.on("SIGTERM", () => { server.close(); process.exit(0); });
+process.on("SIGINT", () => { server.close(); process.exit(0); });
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled rejection in evaluator:", err);
+  // Don't crash — supervisor will restart if we do
+});
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception in evaluator:", err);
+  process.exit(1); // Supervisor will restart
+});
