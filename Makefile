@@ -1,4 +1,4 @@
-.PHONY: build install dev clean
+.PHONY: build install dev clean dashboard dashboard-build
 
 build:
 	go build -o pilot .
@@ -16,3 +16,9 @@ dev:
 
 clean:
 	rm -f pilot
+
+dashboard:
+	cd dashboard && wails dev
+
+dashboard-build:
+	cd dashboard && wails build

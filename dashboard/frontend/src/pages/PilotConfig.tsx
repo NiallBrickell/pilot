@@ -1,0 +1,306 @@
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import type { PilotConfig } from "../lib/types";
+import { getPilotConfig, savePilotConfig } from "../lib/api";
+
+export function PilotConfigPage() {
+  const navigate = useNavigate();
+  const [config, setConfig] = useState<PilotConfig | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getPilotConfig()
+      .then(setConfig)
+      .catch((err) => setError(`Failed to load config: ${err}`));
+  }, []);
+
+  const handleSave = async () => {
+    if (!config) return;
+    setSaving(true);
+    setError(null);
+    setSaved(false);
+    try {
+      await savePilotConfig(config);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setError(`Failed to save: ${err}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!config) {
+    return (
+      <div className="p-6">
+        {error ? (
+          <p className="text-destructive text-sm">{error}</p>
+        ) : (
+          <p className="text-muted-foreground text-sm">Loading config...</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full overflow-auto">
+      <div className="p-6 max-w-3xl">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h1 className="text-2xl font-semibold text-foreground">
+              Pilot Settings
+            </h1>
+            <p className="text-xs text-muted-foreground">
+              Configure pilot behavior, prompts, and thresholds
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => navigate("/")}
+              className="px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Back
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="px-4 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity disabled:opacity-50"
+            >
+              {saving ? "Saving..." : saved ? "Saved!" : "Save"}
+            </button>
+          </div>
+        </div>
+
+        {error && (
+          <div className="mb-4 p-2 bg-destructive/10 border border-destructive/30 rounded text-xs text-destructive">
+            {error}
+          </div>
+        )}
+
+        <section className="mb-8">
+          <h2 className="text-sm font-semibold text-foreground mb-3">
+            General
+          </h2>
+          <div className="space-y-3">
+            <Field label="Model" hint="Model for evaluations">
+              <input
+                type="text"
+                value={config.general.model}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    general: { ...config.general, model: e.target.value },
+                  })
+                }
+                className="input-field"
+              />
+            </Field>
+
+            <Field
+              label="Confidence Threshold"
+              hint="Minimum confidence for auto-responding (0.0 - 1.0)"
+            >
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={config.general.confidence_threshold}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      general: {
+                        ...config.general,
+                        confidence_threshold: parseFloat(e.target.value),
+                      },
+                    })
+                  }
+                  className="flex-1"
+                />
+                <span className="text-xs font-mono w-10 text-right">
+                  {config.general.confidence_threshold.toFixed(2)}
+                </span>
+              </div>
+            </Field>
+
+            <Field
+              label="Grace Period (seconds)"
+              hint="Delay before auto-approvals take effect. 0 = instant."
+            >
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min="0"
+                  max="30"
+                  step="1"
+                  value={config.general.grace_period_s}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      general: {
+                        ...config.general,
+                        grace_period_s: parseInt(e.target.value),
+                      },
+                    })
+                  }
+                  className="flex-1"
+                />
+                <span className="text-xs font-mono w-10 text-right">
+                  {config.general.grace_period_s}s
+                </span>
+              </div>
+            </Field>
+
+            <Field
+              label="Escalation Timeout (seconds)"
+              hint="How long to wait for approval on escalated calls."
+            >
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min="0"
+                  max="60"
+                  step="5"
+                  value={config.general.escalation_timeout_s}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      general: {
+                        ...config.general,
+                        escalation_timeout_s: parseInt(e.target.value),
+                      },
+                    })
+                  }
+                  className="flex-1"
+                />
+                <span className="text-xs font-mono w-10 text-right">
+                  {config.general.escalation_timeout_s}s
+                </span>
+              </div>
+            </Field>
+
+            <Field
+              label="Idle Timeout (ms)"
+              hint="Wait time before checking for idle pauses"
+            >
+              <input
+                type="number"
+                value={config.general.idle_timeout_ms}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    general: {
+                      ...config.general,
+                      idle_timeout_ms: parseInt(e.target.value) || 0,
+                    },
+                  })
+                }
+                className="input-field"
+              />
+            </Field>
+
+            <Field
+              label="Pending Response Max Age (s)"
+              hint="Discard pending auto-responses older than this"
+            >
+              <input
+                type="number"
+                value={config.general.pending_response_max_age_s}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    general: {
+                      ...config.general,
+                      pending_response_max_age_s: parseInt(e.target.value) || 0,
+                    },
+                  })
+                }
+                className="input-field"
+              />
+            </Field>
+
+            <Field label="SSE Port" hint="Port for the live event stream server">
+              <input
+                type="number"
+                value={config.general.sse_port}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    general: {
+                      ...config.general,
+                      sse_port: parseInt(e.target.value) || 9721,
+                    },
+                  })
+                }
+                className="input-field"
+              />
+            </Field>
+          </div>
+        </section>
+
+        <section className="mb-8">
+          <h2 className="text-sm font-semibold text-foreground mb-3">
+            Prompts
+          </h2>
+
+          <Field
+            label="Approval Prompt"
+            hint="System prompt for tool call approval."
+          >
+            <textarea
+              value={config.prompts.approval}
+              onChange={(e) =>
+                setConfig({
+                  ...config,
+                  prompts: { ...config.prompts, approval: e.target.value },
+                })
+              }
+              rows={16}
+              className="input-field font-mono text-[11px] leading-relaxed"
+            />
+          </Field>
+
+          <Field
+            label="Auto-Respond Prompt"
+            hint="System prompt for idle detection."
+          >
+            <textarea
+              value={config.prompts.auto_respond}
+              onChange={(e) =>
+                setConfig({
+                  ...config,
+                  prompts: { ...config.prompts, auto_respond: e.target.value },
+                })
+              }
+              rows={16}
+              className="input-field font-mono text-[11px] leading-relaxed"
+            />
+          </Field>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1">
+      <label className="text-xs font-medium text-foreground">{label}</label>
+      {hint && (
+        <p className="text-[10px] text-muted-foreground">{hint}</p>
+      )}
+      {children}
+    </div>
+  );
+}

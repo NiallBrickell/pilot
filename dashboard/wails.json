@@ -1,0 +1,15 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "pilot-dashboard",
+  "outputfilename": "pilot-dashboard",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "debounceMS": 500,
+  "reloaddirs": "internal,.",
+  "author": {
+    "name": "Niall Brickell",
+    "email": "niall@thenuggets.app"
+  }
+}
