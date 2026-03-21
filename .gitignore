@@ -5,6 +5,9 @@ pilot
 # Node
 node_modules/
 
+# Frontend build output
+dashboard/frontend/dist/
+
 # Runtime state (belongs in ~/.pilot/)
 state.json
 *.pid
