@@ -369,14 +369,14 @@ function GracePeriodCard({
           disabled={acting}
           className="px-3 py-1 text-xs bg-destructive/15 text-destructive rounded hover:bg-destructive/25 transition-colors disabled:opacity-50"
         >
-          Reject
+          Block
         </button>
         <button
           onClick={handleApprove}
           disabled={acting}
           className="px-3 py-1 text-xs bg-success/15 text-success rounded hover:bg-success/25 transition-colors disabled:opacity-50"
         >
-          Approve
+          Allow
         </button>
       </div>
     </div>

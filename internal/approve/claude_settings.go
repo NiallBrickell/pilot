@@ -40,14 +40,18 @@ func CheckClaudeSettings(toolName, toolInput, cwd string) string {
 		cwd, _ = os.Getwd()
 	}
 
-	// Collect settings files from most local to most global
+	// Collect settings files from most local to most global.
+	// At each directory, check settings.local.json first (highest priority),
+	// then settings.json (project-level, committed).
 	var files []claudeSettings
 
 	for dir := cwd; dir != ""; {
-		local := loadSettingsFile(filepath.Join(dir, ".claude", "settings.local.json"))
-		if len(local.Permissions.Allow) > 0 || len(local.Permissions.Deny) > 0 ||
-			len(local.Permissions.Ask) > 0 || local.Permissions.DefaultMode != "" {
-			files = append(files, local)
+		for _, name := range []string{"settings.local.json", "settings.json"} {
+			s := loadSettingsFile(filepath.Join(dir, ".claude", name))
+			if len(s.Permissions.Allow) > 0 || len(s.Permissions.Deny) > 0 ||
+				len(s.Permissions.Ask) > 0 || s.Permissions.DefaultMode != "" {
+				files = append(files, s)
+			}
 		}
 
 		parent := filepath.Dir(dir)

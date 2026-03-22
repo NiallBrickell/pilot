@@ -142,6 +142,7 @@ type evalResult struct {
 	Decision   string  `json:"decision"`
 	Reason     string  `json:"reason"`
 	Confidence float64 `json:"confidence"`
+	Source     string  `json:"source"` // "settings", "pilot", "haiku", "interrogate"
 }
 
 // evaluateViaServer calls the pilot serve process to evaluate.
@@ -224,7 +225,31 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 		})
 	}
 
-	// Escalation: haiku says deny. Send to dashboard for human decision.
+	// Interrogation: pilot detected Claude may be off-track.
+	// High confidence → deny directly, Claude course-corrects.
+	// Lower confidence → escalate to dashboard for human decision.
+	if result.Source == "interrogate" {
+		if result.Confidence >= 0.85 {
+			confidence := result.Confidence
+			_ = state.RecordAction(state.PilotAction{
+				Timestamp:  time.Now().UTC(),
+				ActionType: "interrogate",
+				Detail:     fmt.Sprintf("%s: %s", toolName, result.Reason),
+				Confidence: &confidence,
+			})
+			return printJSON(hookResponse{
+				HookSpecificOutput: preToolUseOutput{
+					HookEventName:            "PreToolUse",
+					PermissionDecision:       "deny",
+					PermissionDecisionReason: &result.Reason,
+				},
+			})
+		}
+		// Lower confidence — fall through to escalation below
+	}
+
+	// Escalation: haiku says deny (or low-confidence interrogation).
+	// Send to dashboard for human decision.
 	confidence := 0.0
 	outcome := requestDashboardDecision(cfg, toolName, toolInput, result.Reason, confidence, cfg.General.EscalationTimeoutS)
 	if outcome == "approved" {
