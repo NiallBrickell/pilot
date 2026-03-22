@@ -91,13 +91,30 @@ function makeSem(max) {
 const approvalSem = makeSem(3);  // 3 concurrent approval evals
 const idleSem = makeSem(2);      // 2 concurrent idle evals
 
+// Auto-restart: if 5 consecutive calls timeout, the SDK is stuck.
+// Exit and let the supervisor restart us with fresh state.
+let consecutiveTimeouts = 0;
+const MAX_CONSECUTIVE_TIMEOUTS = 5;
+
 async function withTimeout(promise, ms, fallback) {
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
   });
   try {
-    return await Promise.race([promise, timeout]);
+    const result = await Promise.race([promise, timeout]);
+    consecutiveTimeouts = 0; // Success — reset counter
+    return result;
+  } catch (err) {
+    if (err.message.includes("timed out")) {
+      consecutiveTimeouts++;
+      console.error(`Timeout (${consecutiveTimeouts}/${MAX_CONSECUTIVE_TIMEOUTS}):`, err.message);
+      if (consecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
+        console.error("Too many consecutive timeouts — restarting evaluator");
+        process.exit(1); // Supervisor restarts us
+      }
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
