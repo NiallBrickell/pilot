@@ -66,7 +66,9 @@ When a hook fires, `pilot approve` POSTs to `pilot serve`, which runs the three-
 
 ### Idle detection
 
-The `Stop` hook fires when Claude stops. `pilot on-stop` reads the transcript, builds a conversation summary, and asks Haiku whether Claude should keep going. If confidence exceeds the threshold, pilot auto-responds with a context-aware nudge.
+The `Stop` hook fires when Claude stops. `pilot on-stop` reads the transcript, builds a structured conversation summary (original request, recent user messages, recent assistant messages, Claude's final message), and asks Haiku whether Claude should keep going.
+
+If confidence exceeds the threshold, pilot returns `{"decision": "block", "reason": "keep going — run the tests"}` — Claude Code sees the reason and continues without waiting for user input. No PTY wrapper needed.
 
 ### Interrogation
 
@@ -110,7 +112,7 @@ All config lives in `~/.pilot/pilot.toml`. Created automatically on first run. E
 | `escalation_timeout_s` | `30` | Wait for human on escalated calls (s) |
 | `sse_port` | `9721` | SSE event stream port |
 | `evaluator_port` | `9722` | Evaluator sidecar port |
-| `max_concurrent_evals` | `4` | Max concurrent Haiku calls |
+| `max_concurrent_evals` | `3+2` | Max concurrent Haiku calls (3 approval + 2 idle, separate semaphores) |
 | `evaluator_timeout_ms` | `15000` | Evaluator call timeout (ms) |
 | `interrogation_confidence` | `0.7` | Min confidence for interrogation redirects |
 
@@ -246,6 +248,10 @@ Configure `[[webhooks]]` in `pilot.toml` to receive HTTP POST callbacks. Better 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/events` | GET | SSE event stream |
-| `/status` | GET | Current pilot state as JSON |
+| `/status` | GET | Current pilot state + hooks status as JSON |
 | `/approve/{id}` | POST | Approve a pending escalated call |
 | `/reject/{id}` | POST | Reject a pending escalated call |
+| `/hooks/install` | POST | Install pilot hooks into `~/.claude/settings.json` |
+| `/hooks/uninstall` | POST | Remove pilot hooks from `~/.claude/settings.json` |
+| `/config` | GET | Current pilot configuration as JSON |
+| `/logs` | GET | Recent pilot logs |

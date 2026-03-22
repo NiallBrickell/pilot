@@ -63,3 +63,39 @@ The prompt went through iterations:
 2. **Relaxed** — approve by default, only deny genuinely dangerous operations (data loss, exfil, security). No babysitting. This matches how experienced devs actually work.
 
 Key insight: the prompt should describe *categories of danger*, not explicit command lists. "Destructive database operations" is better than "DROP, TRUNCATE, DELETE" because it lets the model reason about novel cases.
+
+## Stop hook auto-respond: block, don't inject
+
+Original approach: write `pending_response` to state.json, have a PTY wrapper poll and inject it into stdin. Required a dedicated terminal window per session. Completely impractical for 20+ sessions.
+
+Fix: Claude Code's Stop hook supports `{"decision": "block", "reason": "..."}`. Claude sees the reason and continues. No PTY wrapper, no stdin injection, no terminal management. The hook itself is the injection mechanism.
+
+## Separate semaphores for approvals vs idle
+
+With 20 sessions, stop hooks fire frequently. If idle evaluations (2-15s each) saturate a shared semaphore, approval evaluations queue behind them. Result: `pilot approve` times out, Claude shows "hook error", and the tool call goes through unevaluated.
+
+Fix: separate semaphores. 3 slots for approvals, 2 for idle. Approvals can never be blocked by idle evaluations. Idle can be slower without impacting the approval path.
+
+## Tool input is JSON, not plain text
+
+Claude Code sends tool input as JSON: `{"command":"git status","description":"..."}` for Bash, `{"file_path":"/foo.go",...}` for Edit/Write. The permission matching code was comparing `Bash({"command":"git status",...})` against patterns like `Bash(git status:*)` — never matching.
+
+Fix: extract the relevant field from JSON input before building the signature. `command` for Bash, `file_path` for Edit/Write, `domain` from URL for WebFetch. Tests added.
+
+## Interrogation: recent messages define the task
+
+In long sessions, the user's task evolves. The interrogation system initially weighted the original request too heavily, flagging legitimate work as "off track" because it didn't match the first message.
+
+Fix: the prompt now says "MOST RECENT messages are the current task". Only flag genuinely off-track behaviour, not task evolution.
+
+## Orphaned evaluator on restart
+
+`pilot serve` starts a Node evaluator child process. `StopServe` killed the Go process but not the Node child, leaving it orphaned on port 9722. Next start: evaluator can't bind the port, crashes in a loop.
+
+Fix: kill both ports (9721 + 9722) on stop. Use `lsof -ti:PORT | xargs kill`. Supervisor auto-restarts the evaluator on crash with 2s backoff.
+
+## Webhook integration pattern
+
+External apps (like acme-development dashboard) integrate via webhooks, not direct code imports. Pilot POSTs events to configured HTTP endpoints. The external app receives them and feeds to its own UI.
+
+This is cleaner than the original approach of embedding pilot code in the dashboard. The dashboard just needs a webhook receiver endpoint and a way to approve/reject via `POST /approve/{id}` and `POST /reject/{id}` on pilot serve.
