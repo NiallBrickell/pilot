@@ -190,7 +190,7 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 
 		// Grace period for approvals
 		if cfg.General.GracePeriodS > 0 {
-			outcome := requestDashboardDecision(cfg, toolName, toolInput, result.Reason, confidence, cfg.General.GracePeriodS)
+			outcome := requestDashboardDecision(cfg, toolName, toolInput, result.Reason, "haiku", confidence, cfg.General.GracePeriodS)
 			if outcome == "rejected" {
 				reason := "pilot: human rejected during grace period"
 				_ = state.RecordAction(state.PilotAction{
@@ -251,7 +251,7 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 	// Escalation: haiku says deny (or low-confidence interrogation).
 	// Send to dashboard for human decision.
 	confidence := 0.0
-	outcome := requestDashboardDecision(cfg, toolName, toolInput, result.Reason, confidence, cfg.General.EscalationTimeoutS)
+	outcome := requestDashboardDecision(cfg, toolName, toolInput, result.Reason, result.Source, confidence, cfg.General.EscalationTimeoutS)
 	if outcome == "approved" {
 		// Human approved from dashboard
 		confidence = 1.0
@@ -313,13 +313,14 @@ func emitActionToSSE(cfg *config.PilotConfig, ts time.Time, actionType, detail s
 // requestDashboardDecision sends a pending approval to the dashboard and blocks
 // for timeoutS seconds waiting for approve/reject. Returns "approved", "rejected", or "timeout".
 // Falls back to "timeout" if server is unreachable.
-func requestDashboardDecision(cfg *config.PilotConfig, toolName, toolInput, reason string, confidence float64, timeoutS float64) string {
+func requestDashboardDecision(cfg *config.PilotConfig, toolName, toolInput, reason, source string, confidence float64, timeoutS float64) string {
 	if timeoutS <= 0 {
 		return "timeout"
 	}
 
 	body, _ := json.Marshal(map[string]any{
 		"tool_name":      toolName,
+		"source":         source,
 		"tool_input":     toolInput,
 		"reason":         reason,
 		"confidence":     confidence,

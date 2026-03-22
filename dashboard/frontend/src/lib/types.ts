@@ -54,6 +54,7 @@ export interface PilotPendingApproval {
   tool_name: string;
   tool_input: string;
   reason: string;
+  source?: string;
   confidence: number;
   expires_at: string;
   grace_period_s: number;

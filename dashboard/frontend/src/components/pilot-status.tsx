@@ -334,10 +334,14 @@ function GracePeriodCard({
     await rejectPending(ssePort, pending.id);
   };
 
+  const isInterrogation = pending.source === "interrogate";
+
   return (
     <div className="bg-warning/5 border border-warning/30 rounded-md p-3 space-y-2">
       <div className="flex items-center gap-2 text-xs">
-        <span className="text-warning font-medium">Pending Approval</span>
+        <span className="text-warning font-medium">
+          {isInterrogation ? "Off-Track?" : "Pending"}
+        </span>
         <span className="text-muted-foreground font-mono">{pending.tool_name}</span>
         <div className="flex-1" />
         <span className="text-xs text-muted-foreground">
@@ -364,20 +368,41 @@ function GracePeriodCard({
       </div>
 
       <div className="flex gap-2">
-        <button
-          onClick={handleReject}
-          disabled={acting}
-          className="px-3 py-1 text-xs bg-destructive/15 text-destructive rounded hover:bg-destructive/25 transition-colors disabled:opacity-50"
-        >
-          Block
-        </button>
-        <button
-          onClick={handleApprove}
-          disabled={acting}
-          className="px-3 py-1 text-xs bg-success/15 text-success rounded hover:bg-success/25 transition-colors disabled:opacity-50"
-        >
-          Allow
-        </button>
+        {isInterrogation ? (
+          <>
+            <button
+              onClick={handleApprove}
+              disabled={acting}
+              className="px-3 py-1 text-xs bg-muted text-muted-foreground rounded hover:bg-muted/80 transition-colors disabled:opacity-50"
+            >
+              Continue
+            </button>
+            <button
+              onClick={handleReject}
+              disabled={acting}
+              className="px-3 py-1 text-xs bg-warning/15 text-warning rounded hover:bg-warning/25 transition-colors disabled:opacity-50"
+            >
+              Interrupt
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              onClick={handleReject}
+              disabled={acting}
+              className="px-3 py-1 text-xs bg-destructive/15 text-destructive rounded hover:bg-destructive/25 transition-colors disabled:opacity-50"
+            >
+              Block
+            </button>
+            <button
+              onClick={handleApprove}
+              disabled={acting}
+              className="px-3 py-1 text-xs bg-success/15 text-success rounded hover:bg-success/25 transition-colors disabled:opacity-50"
+            >
+              Allow
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

@@ -187,6 +187,7 @@ func (s *Server) handleInternalPending(w http.ResponseWriter, r *http.Request) {
 		ToolName     string  `json:"tool_name"`
 		ToolInput    string  `json:"tool_input"`
 		Reason       string  `json:"reason"`
+		Source       string  `json:"source"`
 		Confidence   float64 `json:"confidence"`
 		GracePeriodS float64 `json:"grace_period_s"`
 	}
@@ -217,6 +218,7 @@ func (s *Server) handleInternalPending(w http.ResponseWriter, r *http.Request) {
 		"tool_name":      req.ToolName,
 		"tool_input":     req.ToolInput,
 		"reason":         req.Reason,
+		"source":         req.Source,
 		"confidence":     req.Confidence,
 		"expires_at":     pending.ExpiresAt.Format(time.RFC3339Nano),
 		"grace_period_s": req.GracePeriodS,
