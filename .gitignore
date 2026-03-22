@@ -1,6 +1,5 @@
-# Binary
-pilot
-!cmd/
+# Binary (root only)
+/pilot
 
 # Node
 node_modules/

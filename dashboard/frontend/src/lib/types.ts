@@ -38,6 +38,10 @@ export interface PilotConfig {
     grace_period_s: number;
     escalation_timeout_s: number;
     sse_port: number;
+    evaluator_port: number;
+    max_concurrent_evals: number;
+    evaluator_timeout_ms: number;
+    interrogation_confidence: number;
   };
   prompts: {
     approval: string;
