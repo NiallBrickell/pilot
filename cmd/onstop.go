@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"fmt"
+
 	"github.com/NiallBrickell/pilot/internal/auth"
 	"github.com/NiallBrickell/pilot/internal/config"
 	"github.com/NiallBrickell/pilot/internal/state"
@@ -27,18 +29,30 @@ func init() {
 
 func runOnStop(cmd *cobra.Command, args []string) error {
 	if !auth.IsClaudeAuthed() {
+		state.WriteLog("debug", "on-stop", "skipped: claude not authenticated")
 		return nil
 	}
 
 	input, err := io.ReadAll(os.Stdin)
 	if err != nil {
+		state.WriteLog("error", "on-stop", "failed to read stdin: "+err.Error())
 		return err
 	}
 
+	state.WriteLog("debug", "on-stop", fmt.Sprintf("hook fired, input length: %d bytes", len(input)))
+
 	var hookData map[string]any
 	if err := json.Unmarshal(input, &hookData); err != nil {
+		state.WriteLog("warn", "on-stop", "failed to parse hook input: "+err.Error())
 		hookData = map[string]any{}
 	}
+
+	// Log all keys received so we can debug field names
+	var keys []string
+	for k := range hookData {
+		keys = append(keys, k)
+	}
+	state.WriteLog("debug", "on-stop", fmt.Sprintf("hook input keys: %v", keys))
 
 	transcriptPath, _ := hookData["transcript_path"].(string)
 	lastMessage, _ := hookData["last_assistant_message"].(string)
@@ -48,11 +62,17 @@ func runOnStop(cmd *cobra.Command, args []string) error {
 	}
 	sessionID, _ := hookData["session_id"].(string)
 
+	state.WriteLog("debug", "on-stop", fmt.Sprintf("transcript=%q lastMsg=%d chars cwd=%q session=%q",
+		transcriptPath, len(lastMessage), sessionCwd, sessionID))
+
 	// Build structured context from transcript + last message
 	var context string
 	if transcriptPath != "" {
 		if c, err := buildConversationSummary(transcriptPath); err == nil && c != "" {
 			context = c
+			state.WriteLog("debug", "on-stop", fmt.Sprintf("built conversation summary: %d chars", len(c)))
+		} else if err != nil {
+			state.WriteLog("warn", "on-stop", "failed to build summary: "+err.Error())
 		}
 	}
 	// Append last_assistant_message (most recent, may not be in transcript yet)
@@ -61,6 +81,7 @@ func runOnStop(cmd *cobra.Command, args []string) error {
 	}
 	if context == "" {
 		context = "No transcript available"
+		state.WriteLog("debug", "on-stop", "no context available, using fallback")
 	}
 
 	cfg := config.Load()
@@ -71,6 +92,7 @@ func runOnStop(cmd *cobra.Command, args []string) error {
 	}
 
 	// Serve not running — just let Claude stop normally, don't hang
+	state.WriteLog("warn", "on-stop", "serve not running, skipping idle evaluation")
 	slog.Warn("pilot: serve not running, skipping idle evaluation")
 	return nil
 }
@@ -82,11 +104,11 @@ func evaluateIdleViaServer(cfg *config.PilotConfig, context, cwd, sessionID stri
 		"session_id":         sessionID,
 	})
 
-	// Hard timeout: 15s. If haiku takes longer, bail.
 	client := &http.Client{Timeout: 15 * time.Second}
+	state.WriteLog("debug", "on-stop", fmt.Sprintf("posting to %s/internal/evaluate-idle", config.SSEBaseURL(cfg)))
 	resp, err := client.Post(config.SSEBaseURL(cfg)+"/internal/evaluate-idle", "application/json", bytes.NewReader(body))
 	if err != nil {
-		slog.Debug("Serve not reachable for idle eval", "error", err)
+		state.WriteLog("error", "on-stop", "serve not reachable: "+err.Error())
 		return false
 	}
 	defer resp.Body.Close()
@@ -98,11 +120,16 @@ func evaluateIdleViaServer(cfg *config.PilotConfig, context, cwd, sessionID stri
 		Reasoning     string  `json:"reasoning"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		state.WriteLog("error", "on-stop", "failed to decode evaluator response: "+err.Error())
 		return false
 	}
 
+	state.WriteLog("debug", "on-stop", fmt.Sprintf("evaluator result: should_respond=%v confidence=%.2f reasoning=%q message=%q",
+		result.ShouldRespond, result.Confidence, result.Reasoning, result.Message))
+
 	now := time.Now().UTC()
 	if result.ShouldRespond && result.Confidence >= cfg.General.ConfidenceThreshold {
+		state.WriteLog("info", "on-stop", fmt.Sprintf("nudging: %q (confidence %.2f)", result.Message, result.Confidence))
 		_ = state.RecordAction(state.PilotAction{
 			Timestamp:  now,
 			ActionType: state.AutoRespond,
@@ -116,6 +143,8 @@ func evaluateIdleViaServer(cfg *config.PilotConfig, context, cwd, sessionID stri
 			"reason":   result.Message,
 		})
 	} else {
+		state.WriteLog("debug", "on-stop", fmt.Sprintf("not nudging: confidence=%.2f threshold=%.2f",
+			result.Confidence, cfg.General.ConfidenceThreshold))
 		_ = state.RecordAction(state.PilotAction{
 			Timestamp:  now,
 			ActionType: state.AutoRespondSkipped,

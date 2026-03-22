@@ -139,6 +139,29 @@ func (a *App) SavePilotConfig(cfg pilot.PilotConfig) error {
 	return pilot.WritePilotConfig(cfg)
 }
 
+type LogEntry struct {
+	Timestamp string `json:"timestamp"`
+	Level     string `json:"level"`
+	Source    string `json:"source"`
+	Message   string `json:"message"`
+}
+
+func (a *App) GetPilotLogs() []LogEntry {
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := client.Get(a.baseURL() + "/logs")
+	if err != nil {
+		return []LogEntry{}
+	}
+	defer resp.Body.Close()
+
+	var logs []LogEntry
+	json.NewDecoder(resp.Body).Decode(&logs)
+	if logs == nil {
+		return []LogEntry{}
+	}
+	return logs
+}
+
 func strVal(m map[string]any, key string) string {
 	if v, ok := m[key].(string); ok {
 		return v

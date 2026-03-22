@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import type { PilotConfig } from "../lib/types";
-import { getPilotConfig, savePilotConfig } from "../lib/api";
+import type { PilotConfig, PilotLogEntry } from "../lib/types";
+import { getPilotConfig, savePilotConfig, getPilotLogs } from "../lib/api";
 
 export function PilotConfigPage() {
   const navigate = useNavigate();
@@ -9,6 +9,8 @@ export function PilotConfigPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [logs, setLogs] = useState<PilotLogEntry[]>([]);
+  const [showLogs, setShowLogs] = useState(false);
 
   useEffect(() => {
     getPilotConfig()
@@ -279,6 +281,71 @@ export function PilotConfigPage() {
               className="input-field font-mono text-[11px] leading-relaxed"
             />
           </Field>
+        </section>
+
+        {/* Debug Logs */}
+        <section className="mb-8">
+          <div className="flex items-center gap-3 mb-3">
+            <h2 className="text-sm font-semibold text-foreground">
+              Debug Logs
+            </h2>
+            <button
+              onClick={async () => {
+                setShowLogs(!showLogs);
+                if (!showLogs) {
+                  const l = await getPilotLogs();
+                  setLogs(l);
+                }
+              }}
+              className="px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground rounded hover:bg-muted/50 transition-colors"
+            >
+              {showLogs ? "Hide" : "Show"}
+            </button>
+            {showLogs && (
+              <button
+                onClick={async () => {
+                  const l = await getPilotLogs();
+                  setLogs(l);
+                }}
+                className="px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground rounded hover:bg-muted/50 transition-colors"
+              >
+                Refresh
+              </button>
+            )}
+          </div>
+          {showLogs && (
+            <div className="bg-background border border-border rounded-md max-h-96 overflow-auto">
+              {logs.length === 0 ? (
+                <div className="p-3 text-xs text-muted-foreground">No logs yet.</div>
+              ) : (
+                <table className="w-full text-[10px] font-mono">
+                  <tbody>
+                    {logs.map((log, i) => (
+                      <tr key={i} className="border-b border-border/20 hover:bg-muted/20">
+                        <td className="px-2 py-1 text-muted-foreground whitespace-nowrap">
+                          {new Date(log.timestamp).toLocaleTimeString()}
+                        </td>
+                        <td className={`px-1 py-1 whitespace-nowrap ${
+                          log.level === "error" ? "text-destructive" :
+                          log.level === "warn" ? "text-warning" :
+                          log.level === "info" ? "text-info" :
+                          "text-muted-foreground"
+                        }`}>
+                          {log.level}
+                        </td>
+                        <td className="px-1 py-1 text-muted-foreground whitespace-nowrap">
+                          {log.source}
+                        </td>
+                        <td className="px-2 py-1 break-all">
+                          {log.message}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
         </section>
       </div>
     </div>

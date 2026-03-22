@@ -1,4 +1,4 @@
-import type { PilotStatus, PilotConfig } from "./types";
+import type { PilotStatus, PilotConfig, PilotLogEntry } from "./types";
 
 declare global {
   interface Window {
@@ -12,6 +12,7 @@ declare global {
           StopPilotWrapper(): Promise<void>;
           GetPilotConfig(): Promise<PilotConfig>;
           SavePilotConfig(cfg: PilotConfig): Promise<void>;
+          GetPilotLogs(): Promise<PilotLogEntry[]>;
         };
       };
     };
@@ -46,4 +47,8 @@ export async function getPilotConfig(): Promise<PilotConfig> {
 
 export async function savePilotConfig(cfg: PilotConfig): Promise<void> {
   return app().SavePilotConfig(cfg);
+}
+
+export async function getPilotLogs(): Promise<PilotLogEntry[]> {
+  return app().GetPilotLogs();
 }

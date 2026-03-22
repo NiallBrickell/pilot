@@ -6,6 +6,10 @@ export function GetPilotConfig() {
   return window['go']['main']['App']['GetPilotConfig']();
 }
 
+export function GetPilotLogs() {
+  return window['go']['main']['App']['GetPilotLogs']();
+}
+
 export function GetPilotStatus() {
   return window['go']['main']['App']['GetPilotStatus']();
 }

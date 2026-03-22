@@ -107,6 +107,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/reject/", s.handleReject)
 	mux.HandleFunc("/internal/evaluate", s.handleEvaluate)
 	mux.HandleFunc("/internal/evaluate-idle", s.handleEvaluateIdle)
+	mux.HandleFunc("/logs", s.handleLogs)
 
 	s.srv = &http.Server{
 		Addr:    fmt.Sprintf(":%d", s.port),
@@ -699,6 +700,12 @@ func truncateForInterrogate(s string, max int) string {
 		return s
 	}
 	return s[:max]
+}
+
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	logs := state.ReadLogs(200)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(logs)
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

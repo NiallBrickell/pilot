@@ -93,6 +93,16 @@ func getDB() *sql.DB {
 			value TEXT
 		)`)
 
+		db.Exec(`CREATE TABLE IF NOT EXISTS logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp TEXT NOT NULL,
+			level TEXT NOT NULL,
+			source TEXT NOT NULL,
+			message TEXT NOT NULL
+		)`)
+
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs (timestamp DESC)`)
+
 		// Ensure stat rows exist
 		for _, key := range []string{"approvals_auto", "approvals_escalated", "auto_responses", "auto_responses_skipped"} {
 			db.Exec(`INSERT OR IGNORE INTO stats (key, value) VALUES (?, 0)`, key)
@@ -247,4 +257,43 @@ func WriteState(s *PilotState) error {
 	}
 
 	return nil
+}
+
+// LogEntry represents a debug log line.
+type LogEntry struct {
+	Timestamp string `json:"timestamp"`
+	Level     string `json:"level"`
+	Source    string `json:"source"`
+	Message   string `json:"message"`
+}
+
+// WriteLog records a debug log entry.
+func WriteLog(level, source, message string) {
+	db := getDB()
+	db.Exec(`INSERT INTO logs (timestamp, level, source, message) VALUES (?, ?, ?, ?)`,
+		time.Now().UTC().Format(time.RFC3339Nano), level, source, message)
+
+	// Keep last 500 logs
+	db.Exec(`DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY id DESC LIMIT 500)`)
+}
+
+// ReadLogs returns recent log entries.
+func ReadLogs(limit int) []LogEntry {
+	db := getDB()
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := db.Query(`SELECT timestamp, level, source, message FROM logs ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var entries []LogEntry
+	for rows.Next() {
+		var e LogEntry
+		rows.Scan(&e.Timestamp, &e.Level, &e.Source, &e.Message)
+		entries = append(entries, e)
+	}
+	return entries
 }

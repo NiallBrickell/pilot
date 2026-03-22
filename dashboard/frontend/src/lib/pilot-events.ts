@@ -13,13 +13,10 @@ export interface PilotSSEState {
   pendingApprovals: Map<string, PilotPendingApproval>;
 }
 
-// Module-level storage so actions survive component unmount/remount
-let persistedActions: PilotAction[] = [];
-
 export function usePilotSSE(port: number, enabled: boolean) {
   const [connectionState, setConnectionState] =
     useState<SSEConnectionState>("disconnected");
-  const [actions, setActions] = useState<PilotAction[]>(persistedActions);
+  const [actions, setActions] = useState<PilotAction[]>([]);
   const [pendingApprovals, setPendingApprovals] = useState<
     Map<string, PilotPendingApproval>
   >(new Map());
@@ -41,11 +38,7 @@ export function usePilotSSE(port: number, enabled: boolean) {
 
     es.addEventListener("action", (e) => {
       const action: PilotAction = JSON.parse(e.data);
-      setActions((prev) => {
-        const next = [action, ...prev].slice(0, 200);
-        persistedActions = next;
-        return next;
-      });
+      setActions((prev) => [action, ...prev].slice(0, 200));
     });
 
     es.addEventListener("pending_approval", (e) => {

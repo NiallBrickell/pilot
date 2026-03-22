@@ -60,6 +60,13 @@ export interface PilotPendingApproval {
   grace_period_s: number;
 }
 
+export interface PilotLogEntry {
+  timestamp: string;
+  level: string;
+  source: string;
+  message: string;
+}
+
 export interface PilotApprovalResolved {
   id: string;
   outcome: "approved" | "rejected";

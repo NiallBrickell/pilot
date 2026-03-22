@@ -97,11 +97,23 @@ export function PilotStatusWidget() {
     sseEnabled
   );
 
+  // Merge: start with persisted actions from server (SQLite), then layer
+  // SSE events on top for real-time updates. Deduplicate by timestamp.
   const allActions: PilotAction[] = useMemo(() => {
-    if (sseActions.length > 0) {
-      return sseActions;
+    const serverActions = status?.recent_actions ?? [];
+    if (sseActions.length === 0) return serverActions;
+
+    const seen = new Set(serverActions.map((a) => a.timestamp));
+    const merged = [...serverActions];
+    for (const a of sseActions) {
+      if (!seen.has(a.timestamp)) {
+        merged.push(a);
+        seen.add(a.timestamp);
+      }
     }
-    return status?.recent_actions ?? [];
+    // Sort newest first
+    merged.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    return merged.slice(0, 200);
   }, [sseActions, status?.recent_actions]);
 
   const filteredActions = useMemo(() => {
