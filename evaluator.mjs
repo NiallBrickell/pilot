@@ -68,30 +68,28 @@ const IDLE_SCHEMA = {
   },
 };
 
-// Concurrency limiter
-const MAX_CONCURRENT = 4;
-let active = 0;
-const queue = [];
-
-function acquireSem() {
-  return new Promise((resolve) => {
-    if (active < MAX_CONCURRENT) {
-      active++;
-      resolve();
-    } else {
-      queue.push(resolve);
-    }
-  });
+// Separate semaphores so idle evals can't block approvals
+function makeSem(max) {
+  let active = 0;
+  const queue = [];
+  return {
+    get active() { return active; },
+    get queued() { return queue.length; },
+    acquire() {
+      return new Promise((resolve) => {
+        if (active < max) { active++; resolve(); }
+        else { queue.push(resolve); }
+      });
+    },
+    release() {
+      if (queue.length > 0) { queue.shift()(); }
+      else { active--; }
+    },
+  };
 }
 
-function releaseSem() {
-  if (queue.length > 0) {
-    const next = queue.shift();
-    next();
-  } else {
-    active--;
-  }
-}
+const approvalSem = makeSem(3);  // 3 concurrent approval evals
+const idleSem = makeSem(2);      // 2 concurrent idle evals
 
 async function withTimeout(promise, ms, fallback) {
   let timer;
@@ -154,7 +152,11 @@ async function evaluateIdle(systemPrompt, transcriptContext) {
 async function handleRequest(req, res) {
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true, active, queued: queue.length }));
+    res.end(JSON.stringify({
+      ok: true,
+      approval: { active: approvalSem.active, queued: approvalSem.queued },
+      idle: { active: idleSem.active, queued: idleSem.queued },
+    }));
     return;
   }
 
@@ -170,18 +172,20 @@ async function handleRequest(req, res) {
     req.on("end", () => resolve(JSON.parse(Buffer.concat(chunks).toString())));
   });
 
-  await acquireSem();
+  const isApproval = req.url === "/evaluate-approval";
+  const isIdle = req.url === "/evaluate-idle";
+  if (!isApproval && !isIdle) {
+    res.writeHead(404);
+    res.end("not found");
+    return;
+  }
+
+  const sem = isApproval ? approvalSem : idleSem;
+  await sem.acquire();
   try {
-    let result;
-    if (req.url === "/evaluate-approval") {
-      result = await evaluateApproval(body.system_prompt, body.tool_name, body.tool_input);
-    } else if (req.url === "/evaluate-idle") {
-      result = await evaluateIdle(body.system_prompt, body.transcript_context);
-    } else {
-      res.writeHead(404);
-      res.end("not found");
-      return;
-    }
+    const result = isApproval
+      ? await evaluateApproval(body.system_prompt, body.tool_name, body.tool_input)
+      : await evaluateIdle(body.system_prompt, body.transcript_context);
 
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(result));
@@ -190,7 +194,7 @@ async function handleRequest(req, res) {
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ decision: "deny", reason: `error: ${err.message}` }));
   } finally {
-    releaseSem();
+    sem.release();
   }
 }
 

@@ -168,15 +168,27 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleStatus returns current pilot state as JSON.
+// handleStatus returns current pilot state + hooks status as JSON.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	ps, err := state.ReadState()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Check if hooks are installed
+	home, _ := os.UserHomeDir()
+	settingsData, _ := os.ReadFile(fmt.Sprintf("%s/.claude/settings.json", home))
+	hooksInstalled := strings.Contains(string(settingsData), "pilot approve")
+
+	// Merge into response
+	raw, _ := json.Marshal(ps)
+	var result map[string]any
+	json.Unmarshal(raw, &result)
+	result["hooks_installed"] = hooksInstalled
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ps)
+	json.NewEncoder(w).Encode(result)
 }
 
 // handleInternalPending is called by `pilot approve` to register a pending approval
