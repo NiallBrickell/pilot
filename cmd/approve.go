@@ -176,9 +176,12 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 	if result.Decision == "passthrough" {
 		// Emit a "settings passthrough" event so dashboard can show it
 		emitActionToSSE(cfg, time.Now().UTC(), "passthrough", fmt.Sprintf("%s: %s", toolName, result.Reason), nil, toolName, toolInput, cwd, sessionID)
+		reason := "pilot: auto-approved by settings"
 		return printJSON(hookResponse{
 			HookSpecificOutput: preToolUseOutput{
-				HookEventName: "PreToolUse",
+				HookEventName:            "PreToolUse",
+				PermissionDecision:       "allow",
+				PermissionDecisionReason: &reason,
 			},
 		})
 	}
