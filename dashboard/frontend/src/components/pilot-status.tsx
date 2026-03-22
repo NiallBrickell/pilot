@@ -120,15 +120,24 @@ export function PilotStatusWidget() {
   const pilotOn = status.available && status.hooks_installed;
 
   const handleTogglePilot = async () => {
+    const wasOn = pilotOn;
     setLoading("pilot");
     try {
-      if (pilotOn) {
+      if (wasOn) {
         await uninstallPilotHooks();
       } else {
         await installPilotHooks();
       }
-      const s = await getPilotStatus();
-      setStatus(s);
+      // Poll until state actually changes (server takes a moment to start/stop)
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        const s = await getPilotStatus();
+        const nowOn = s.available && s.hooks_installed;
+        if (nowOn !== wasOn) {
+          setStatus(s);
+          break;
+        }
+      }
     } catch (err) {
       console.error("Pilot toggle failed:", err);
     } finally {
