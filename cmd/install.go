@@ -113,28 +113,28 @@ func installHooks(pilotBin string) error {
 		hooks = make(map[string]any)
 	}
 
-	hooks["PreToolUse"] = []any{
-		map[string]any{
-			"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch)$",
-			"hooks": []any{
-				map[string]any{
-					"type":    "command",
-					"command": pilotBin + " approve",
-				},
+	pilotPreToolUse := map[string]any{
+		"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch)$",
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": pilotBin + " approve",
 			},
 		},
 	}
 
-	hooks["Stop"] = []any{
-		map[string]any{
-			"hooks": []any{
-				map[string]any{
-					"type":    "command",
-					"command": pilotBin + " on-stop",
-				},
+	pilotStop := map[string]any{
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": pilotBin + " on-stop",
 			},
 		},
 	}
+
+	// For each hook type: keep existing non-pilot entries, replace/add pilot entry
+	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], pilotPreToolUse, pilotBin)
+	hooks["Stop"] = mergeHookEntries(hooks["Stop"], pilotStop, pilotBin)
 
 	settings["hooks"] = hooks
 
@@ -148,6 +148,29 @@ func installHooks(pilotBin string) error {
 	}
 
 	return os.WriteFile(path, data, 0644)
+}
+
+// mergeHookEntries keeps existing non-pilot hook entries and adds/replaces the pilot entry.
+func mergeHookEntries(existing any, pilotEntry map[string]any, pilotBin string) []any {
+	var result []any
+
+	if arr, ok := existing.([]any); ok {
+		for _, entry := range arr {
+			entryJSON, _ := json.Marshal(entry)
+			if strings.Contains(string(entryJSON), pilotBin) {
+				continue // Remove old pilot entry, we'll add the new one
+			}
+			if strings.Contains(string(entryJSON), "pilot approve") || strings.Contains(string(entryJSON), "pilot on-stop") {
+				// Old pilot binary at a different path — warn and skip
+				fmt.Fprintf(os.Stderr, "Warning: replacing existing pilot hook entry (old path)\n")
+				continue
+			}
+			result = append(result, entry)
+		}
+	}
+
+	result = append(result, pilotEntry)
+	return result
 }
 
 func uninstallHooks() error {
