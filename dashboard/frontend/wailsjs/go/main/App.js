@@ -18,14 +18,6 @@ export function SavePilotConfig(arg1) {
   return window['go']['main']['App']['SavePilotConfig'](arg1);
 }
 
-export function StartPilotWrapper() {
-  return window['go']['main']['App']['StartPilotWrapper']();
-}
-
-export function StopPilotWrapper() {
-  return window['go']['main']['App']['StopPilotWrapper']();
-}
-
 export function UninstallPilotHooks() {
   return window['go']['main']['App']['UninstallPilotHooks']();
 }

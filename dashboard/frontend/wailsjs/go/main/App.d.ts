@@ -10,8 +10,4 @@ export function InstallPilotHooks():Promise<void>;
 
 export function SavePilotConfig(arg1:pilot.PilotConfig):Promise<void>;
 
-export function StartPilotWrapper():Promise<void>;
-
-export function StopPilotWrapper():Promise<void>;
-
 export function UninstallPilotHooks():Promise<void>;

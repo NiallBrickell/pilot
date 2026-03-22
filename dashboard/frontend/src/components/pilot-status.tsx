@@ -117,17 +117,7 @@ export function PilotStatusWidget() {
     );
   }
 
-  if (!status.available) {
-    return (
-      <div className="p-6">
-        <p className="text-muted-foreground text-sm">
-          Pilot server not running. Run <code className="bg-muted px-1 rounded">pilot start</code> first.
-        </p>
-      </div>
-    );
-  }
-
-  const pilotOn = status.hooks_installed;
+  const pilotOn = status.available && status.hooks_installed;
 
   const handleTogglePilot = async () => {
     setLoading("pilot");
@@ -294,7 +284,7 @@ export function PilotStatusWidget() {
           </div>
         ) : (
           <div className="text-sm text-muted-foreground">
-            No actions recorded yet. Start a Claude Code session with pilot hooks enabled.
+            No actions yet.
           </div>
         )}
       </div>

@@ -1,14 +1,17 @@
 package pilot
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 )
+
+// Types shared with frontend via Wails bindings.
 
 type PilotStatus struct {
 	Available          bool          `json:"available"`
@@ -37,12 +40,9 @@ type PilotAction struct {
 	Confidence *float64 `json:"confidence"`
 }
 
-func pilotStatePath() string {
-	return filepath.Join(pilotDir(), "state.json")
-}
-
-func findPilotBinary() (string, error) {
-	// Check PATH first
+// FindPilotBinary locates the pilot binary.
+func FindPilotBinary() (string, error) {
+	// Check PATH
 	if p, err := exec.LookPath("pilot"); err == nil {
 		return p, nil
 	}
@@ -51,115 +51,112 @@ func findPilotBinary() (string, error) {
 	if _, err := os.Stat(p); err == nil {
 		return p, nil
 	}
+	// Check working directory and parent (covers `wails dev` from dashboard/)
+	if cwd, err := os.Getwd(); err == nil {
+		for _, candidate := range []string{
+			filepath.Join(cwd, "pilot"),
+			filepath.Join(cwd, "..", "pilot"),
+		} {
+			if resolved, err := filepath.Abs(candidate); err == nil {
+				if _, err := os.Stat(resolved); err == nil {
+					return resolved, nil
+				}
+			}
+		}
+	}
+	// Check next to this binary
+	if exe, err := os.Executable(); err == nil {
+		for _, candidate := range []string{
+			filepath.Join(filepath.Dir(exe), "pilot"),
+			filepath.Join(filepath.Dir(exe), "..", "pilot"),
+		} {
+			if resolved, err := filepath.Abs(candidate); err == nil {
+				if _, err := os.Stat(resolved); err == nil {
+					return resolved, nil
+				}
+			}
+		}
+	}
 	return "", fmt.Errorf("pilot binary not found")
 }
 
-func GetPilotStatus() PilotStatus {
-	_, binErr := findPilotBinary()
-	hasBinary := binErr == nil
-	ssePort := readSSEPort()
-	sseAvailable := checkSSEAvailable(ssePort)
-	// Available if server is running OR we can find the binary
-	available := sseAvailable || hasBinary
+// StartServe launches `pilot serve` in the background.
+func StartServe() error {
+	if IsServeRunning() {
+		return nil
+	}
 
-	path := pilotStatePath()
-	data, err := os.ReadFile(path)
+	bin, err := FindPilotBinary()
 	if err != nil {
-		return PilotStatus{
-			Available:     available,
-			RecentActions: []PilotAction{},
-		}
+		return err
 	}
 
-	var state map[string]any
-	if err := json.Unmarshal(data, &state); err != nil {
-		return PilotStatus{
-			Available:     available,
-			RecentActions: []PilotAction{},
-		}
+	cmd := exec.Command(bin, "serve")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start pilot serve: %w", err)
 	}
 
-	statsVal, _ := state["stats"].(map[string]any)
+	pidPath := filepath.Join(pilotDir(), "pilot-serve.pid")
+	os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644)
+	go cmd.Wait()
 
-	var actions []PilotAction
-	if arr, ok := state["recent_actions"].([]any); ok {
-		start := 0
-		if len(arr) > 20 {
-			start = len(arr) - 20
-		}
-		for i := len(arr) - 1; i >= start; i-- {
-			a, ok := arr[i].(map[string]any)
-			if !ok {
-				continue
-			}
-			action := PilotAction{
-				Timestamp:  strVal(a, "timestamp"),
-				ActionType: strVal(a, "action_type"),
-				Detail:     strVal(a, "detail"),
-			}
-			if c, ok := a["confidence"].(float64); ok {
-				action.Confidence = &c
-			}
-			actions = append(actions, action)
-		}
-	}
-	if actions == nil {
-		actions = []PilotAction{}
-	}
-
-	var sessionStart *string
-	if s, ok := state["session_start"].(string); ok {
-		sessionStart = &s
-	}
-
-	sessionActive, _ := state["session_active"].(bool)
-	_, hasPending := state["pending_response"].(map[string]any)
-
-	hookStatus := CheckHooksInstalled()
-	wrapperRunning := IsWrapperRunning() || IsServeRunning()
-
-	return PilotStatus{
-		Available:     available,
-		SessionActive: sessionActive,
-		SessionStart:  sessionStart,
-		Stats: PilotStats{
-			ApprovalsAuto:        uint64Val(statsVal, "approvals_auto"),
-			ApprovalsEscalated:   uint64Val(statsVal, "approvals_escalated"),
-			AutoResponses:        uint64Val(statsVal, "auto_responses"),
-			AutoResponsesSkipped: uint64Val(statsVal, "auto_responses_skipped"),
-		},
-		RecentActions:      actions,
-		HasPendingResponse: hasPending,
-		HooksInstalled:     hookStatus.Installed,
-		WrapperRunning:     wrapperRunning,
-		SSEAvailable:       sseAvailable,
-		SSEPort:            ssePort,
-	}
+	return nil
 }
 
-func strVal(m map[string]any, key string) string {
-	if v, ok := m[key].(string); ok {
-		return v
-	}
-	return ""
+// StopServe stops the background `pilot serve` process.
+func StopServe() error {
+	pidPath := filepath.Join(pilotDir(), "pilot-serve.pid")
+	return stopPid(pidPath)
 }
 
-func uint64Val(m map[string]any, key string) uint64 {
-	if m == nil {
-		return 0
-	}
-	if v, ok := m[key].(float64); ok {
-		return uint64(v)
-	}
-	return 0
+// IsServeRunning checks if the serve process is alive.
+func IsServeRunning() bool {
+	pidPath := filepath.Join(pilotDir(), "pilot-serve.pid")
+	return isPidAlive(pidPath)
 }
 
-func checkSSEAvailable(port int) bool {
-	client := &http.Client{Timeout: 200 * time.Millisecond}
-	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/status", port))
+// KillLingering kills any running `pilot approve` or `pilot on-stop` processes.
+func KillLingering() error {
+	exec.Command("pkill", "-f", "pilot approve").Run()
+	exec.Command("pkill", "-f", "pilot on-stop").Run()
+	return nil
+}
+
+func isPidAlive(pidPath string) bool {
+	data, err := os.ReadFile(pidPath)
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return false
+	}
+	return syscall.Kill(pid, 0) == nil
+}
+
+func stopPid(pidPath string) error {
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return nil
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		os.Remove(pidPath)
+		return nil
+	}
+	syscall.Kill(pid, syscall.SIGTERM)
+	for i := 0; i < 20; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if syscall.Kill(pid, 0) != nil {
+			os.Remove(pidPath)
+			return nil
+		}
+	}
+	syscall.Kill(pid, syscall.SIGKILL)
+	os.Remove(pidPath)
+	return nil
 }
