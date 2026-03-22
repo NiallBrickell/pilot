@@ -107,6 +107,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/reject/", s.handleReject)
 	mux.HandleFunc("/internal/evaluate", s.handleEvaluate)
 	mux.HandleFunc("/internal/evaluate-idle", s.handleEvaluateIdle)
+	mux.HandleFunc("/hooks/install", s.handleHooksInstall)
+	mux.HandleFunc("/hooks/uninstall", s.handleHooksUninstall)
+	mux.HandleFunc("/config", s.handleGetConfig)
 	mux.HandleFunc("/logs", s.handleLogs)
 
 	s.srv = &http.Server{
@@ -700,6 +703,128 @@ func truncateForInterrogate(s string, max int) string {
 		return s
 	}
 	return s[:max]
+}
+
+func (s *Server) handleHooksInstall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	bin, err := os.Executable()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("cannot find pilot binary: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	home, _ := os.UserHomeDir()
+	settingsPath := fmt.Sprintf("%s/.claude/settings.json", home)
+
+	settings := make(map[string]any)
+	if data, err := os.ReadFile(settingsPath); err == nil {
+		_ = json.Unmarshal(data, &settings)
+	}
+
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = make(map[string]any)
+	}
+
+	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], map[string]any{
+		"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch)$",
+		"hooks":   []any{map[string]any{"type": "command", "command": bin + " approve"}},
+	})
+	hooks["Stop"] = mergeHookEntries(hooks["Stop"], map[string]any{
+		"hooks": []any{map[string]any{"type": "command", "command": bin + " on-stop"}},
+	})
+
+	settings["hooks"] = hooks
+	data, _ := json.MarshalIndent(settings, "", "  ")
+	os.MkdirAll(fmt.Sprintf("%s/.claude", home), 0755)
+	if err := os.WriteFile(settingsPath, data, 0644); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "installed"})
+}
+
+func (s *Server) handleHooksUninstall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	home, _ := os.UserHomeDir()
+	settingsPath := fmt.Sprintf("%s/.claude/settings.json", home)
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "uninstalled"})
+		return
+	}
+
+	settings := make(map[string]any)
+	if err := json.Unmarshal(data, &settings); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks != nil {
+		removePilotHookEntries(hooks, "PreToolUse")
+		removePilotHookEntries(hooks, "Stop")
+		if len(hooks) == 0 {
+			delete(settings, "hooks")
+		}
+	}
+
+	out, _ := json.MarshalIndent(settings, "", "  ")
+	os.WriteFile(settingsPath, out, 0644)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "uninstalled"})
+}
+
+func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	cfg := config.Load()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(cfg)
+}
+
+func mergeHookEntries(existing any, pilotEntry map[string]any) []any {
+	var result []any
+	if arr, ok := existing.([]any); ok {
+		for _, entry := range arr {
+			entryJSON, _ := json.Marshal(entry)
+			if !strings.Contains(string(entryJSON), "pilot approve") && !strings.Contains(string(entryJSON), "pilot on-stop") {
+				result = append(result, entry)
+			}
+		}
+	}
+	result = append(result, pilotEntry)
+	return result
+}
+
+func removePilotHookEntries(hooks map[string]any, key string) {
+	arr, ok := hooks[key].([]any)
+	if !ok {
+		return
+	}
+	var filtered []any
+	for _, entry := range arr {
+		entryJSON, _ := json.Marshal(entry)
+		if !strings.Contains(string(entryJSON), "pilot approve") && !strings.Contains(string(entryJSON), "pilot on-stop") {
+			filtered = append(filtered, entry)
+		}
+	}
+	if len(filtered) == 0 {
+		delete(hooks, key)
+	} else {
+		hooks[key] = filtered
+	}
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
