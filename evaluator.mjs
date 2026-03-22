@@ -1,44 +1,37 @@
-// Pilot evaluator sidecar — long-running HTTP server that uses the Claude Agent SDK
-// for haiku evaluations. Called by pilot serve instead of spawning claude -p.
+// Pilot evaluator sidecar — uses Anthropic SDK directly for fast evaluations.
+// ~2s per call vs 7-18s with the Agent SDK.
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import Anthropic from "@anthropic-ai/sdk";
 import { createServer } from "http";
-import { readFileSync, existsSync } from "fs";
-import { resolve, dirname, join } from "path";
+import { readFileSync } from "fs";
+import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Load .env — check multiple locations in priority order
-function loadEnv() {
-  const candidates = [
-    process.env.PILOT_HOME ? join(process.env.PILOT_HOME, ".env") : null,
-    join(homedir(), ".pilot", ".env"),
-    resolve(__dirname, ".env"),
-    resolve(__dirname, "../.env"),
-  ].filter(Boolean);
-
-  for (const envPath of candidates) {
-    if (!existsSync(envPath)) continue;
-    try {
-      const env = readFileSync(envPath, "utf8");
-      for (const line of env.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("#")) continue;
-        const eqIdx = trimmed.indexOf("=");
-        if (eqIdx === -1) continue;
-        const key = trimmed.slice(0, eqIdx);
-        const val = trimmed.slice(eqIdx + 1);
-        if (!process.env[key]) process.env[key] = val;
-      }
-      return;
-    } catch {}
-  }
+// Load .env from multiple locations
+for (const envPath of [
+  resolve(homedir(), ".pilot", ".env"),
+  resolve(__dirname, ".env"),
+  resolve(__dirname, "..", ".env"),
+]) {
+  try {
+    const env = readFileSync(envPath, "utf8");
+    for (const line of env.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx === -1) continue;
+      const key = trimmed.slice(0, eqIdx);
+      const val = trimmed.slice(eqIdx + 1);
+      if (!process.env[key]) process.env[key] = val;
+    }
+  } catch {}
 }
-loadEnv();
 
 const PORT = parseInt(process.env.PILOT_EVALUATOR_PORT || "9722", 10);
+const client = new Anthropic();
 
 const APPROVAL_SCHEMA = {
   type: "json_schema",
@@ -88,82 +81,34 @@ function makeSem(max) {
   };
 }
 
-const approvalSem = makeSem(3);  // 3 concurrent approval evals
-const idleSem = makeSem(2);      // 2 concurrent idle evals
-
-// Auto-restart: if 5 consecutive calls timeout, the SDK is stuck.
-// Exit and let the supervisor restart us with fresh state.
-let consecutiveTimeouts = 0;
-const MAX_CONSECUTIVE_TIMEOUTS = 5;
-
-async function withTimeout(promise, ms, fallback) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
-  });
-  try {
-    const result = await Promise.race([promise, timeout]);
-    consecutiveTimeouts = 0; // Success — reset counter
-    return result;
-  } catch (err) {
-    if (err.message.includes("timed out")) {
-      consecutiveTimeouts++;
-      console.error(`Timeout (${consecutiveTimeouts}/${MAX_CONSECUTIVE_TIMEOUTS}):`, err.message);
-      if (consecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
-        console.error("Too many consecutive timeouts — restarting evaluator");
-        process.exit(1); // Supervisor restarts us
-      }
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
-}
+const approvalSem = makeSem(4);
+const idleSem = makeSem(2);
 
 async function evaluateApproval(systemPrompt, toolName, toolInput) {
-  const userMessage = `Tool: ${toolName}\nInput: ${toolInput.slice(0, 2000)}`;
+  const resp = await client.messages.create({
+    model: "claude-haiku-4-5",
+    max_tokens: 512,
+    system: systemPrompt,
+    messages: [{ role: "user", content: `Tool: ${toolName}\nInput: ${toolInput.slice(0, 2000)}` }],
+    output_config: { format: APPROVAL_SCHEMA },
+  });
 
-  return withTimeout((async () => {
-    for await (const msg of query({
-      prompt: userMessage,
-      options: {
-        systemPrompt,
-        model: "claude-haiku-4-5",
-        allowedTools: [],
-        maxTurns: 3,
-        permissionMode: "dontAsk",
-        outputFormat: APPROVAL_SCHEMA,
-      },
-    })) {
-      if (msg.type === "result" && msg.structured_output) {
-        return msg.structured_output;
-      }
-    }
-    return { decision: "deny", reason: "no structured output returned" };
-  })(), 15000, { decision: "deny", reason: "evaluation timed out" });
+  return JSON.parse(resp.content[0].text);
 }
 
 async function evaluateIdle(systemPrompt, transcriptContext) {
-  const userMessage = `Here is the recent Claude Code output. Claude has stopped and is showing the input prompt. Should I auto-respond?\n\n---\n${transcriptContext.slice(0, 4000)}`;
+  const resp = await client.messages.create({
+    model: "claude-haiku-4-5",
+    max_tokens: 512,
+    system: systemPrompt,
+    messages: [{
+      role: "user",
+      content: `Here is the recent Claude Code conversation. Claude has stopped. Should I auto-respond?\n\n---\n${transcriptContext.slice(0, 4000)}`,
+    }],
+    output_config: { format: IDLE_SCHEMA },
+  });
 
-  return withTimeout((async () => {
-    for await (const msg of query({
-      prompt: userMessage,
-      options: {
-        systemPrompt,
-        model: "claude-haiku-4-5",
-        allowedTools: [],
-        maxTurns: 3,
-        permissionMode: "dontAsk",
-        outputFormat: IDLE_SCHEMA,
-      },
-    })) {
-      if (msg.type === "result" && msg.structured_output) {
-        return msg.structured_output;
-      }
-    }
-    return { should_respond: false, message: "", confidence: 0, reasoning: "no structured output returned" };
-  })(), 15000, { should_respond: false, message: "", confidence: 0, reasoning: "evaluation timed out" });
+  return JSON.parse(resp.content[0].text);
 }
 
 async function handleRequest(req, res) {
@@ -209,7 +154,10 @@ async function handleRequest(req, res) {
   } catch (err) {
     console.error("Evaluation error:", err.message);
     res.writeHead(500, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ decision: "deny", reason: `error: ${err.message}` }));
+    res.end(JSON.stringify(isApproval
+      ? { decision: "deny", reason: `error: ${err.message}` }
+      : { should_respond: false, message: "", confidence: 0, reasoning: `error: ${err.message}` }
+    ));
   } finally {
     sem.release();
   }
@@ -217,16 +165,15 @@ async function handleRequest(req, res) {
 
 const server = createServer(handleRequest);
 server.listen(PORT, () => {
-  console.log(`Pilot evaluator listening on port ${PORT}`);
+  console.log(`Pilot evaluator listening on port ${PORT} (Anthropic SDK)`);
 });
 
 process.on("SIGTERM", () => { server.close(); process.exit(0); });
 process.on("SIGINT", () => { server.close(); process.exit(0); });
 process.on("unhandledRejection", (err) => {
-  console.error("Unhandled rejection in evaluator:", err);
-  // Don't crash — supervisor will restart if we do
+  console.error("Unhandled rejection:", err);
 });
 process.on("uncaughtException", (err) => {
-  console.error("Uncaught exception in evaluator:", err);
-  process.exit(1); // Supervisor will restart
+  console.error("Uncaught exception:", err);
+  process.exit(1);
 });
