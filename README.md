@@ -87,6 +87,7 @@ Pilot works completely standalone — the dashboard is optional.
 |---------|-------------|
 | `pilot start` | Install hooks, start server, enable pilot |
 | `pilot stop` | Remove hooks, stop server, disable pilot |
+| `pilot dashboard` | Download (if needed) and launch the desktop GUI |
 | `pilot serve` | Start server in foreground (for debugging) |
 | `pilot approve` | PreToolUse hook handler (called by Claude Code) |
 | `pilot on-stop` | Stop hook handler (called by Claude Code) |
@@ -165,20 +166,13 @@ def verify(payload: bytes, signature: str, secret: str) -> bool:
 
 ## Dashboard
 
-The optional Wails desktop app provides a GUI for pilot. Located in `dashboard/`.
+Optional desktop GUI for pilot. Downloads automatically on first launch — no build tools needed.
 
 ```bash
-# Development mode (hot reload)
-make dashboard
-
-# Production build
-make dashboard-build
+./pilot dashboard
 ```
 
-### Requirements
-
-- [Wails v2](https://wails.io/docs/gettingstarted/installation)
-- Node.js 18+
+This downloads the prebuilt app from GitHub releases to `~/.pilot/` and launches it. On macOS it opens as a native `.app`.
 
 ### Features
 
@@ -189,6 +183,15 @@ make dashboard-build
 - Dark theme
 
 The dashboard connects to `pilot serve` via SSE — it's purely a UI layer. All decision-making happens in the server.
+
+### Developing the dashboard
+
+If you want to hack on the dashboard itself, you'll need [Wails v2](https://wails.io/docs/gettingstarted/installation):
+
+```bash
+make dashboard          # dev mode with hot reload
+make dashboard-build    # production build
+```
 
 ## Runtime files
 

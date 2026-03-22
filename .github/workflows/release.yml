@@ -1,0 +1,83 @@
+name: Release Dashboard
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-dashboard:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            platform: darwin/universal
+            artifact: pilot-dashboard-macos.zip
+          - os: ubuntu-latest
+            platform: linux/amd64
+            artifact: pilot-dashboard-linux-amd64.tar.gz
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: dashboard/go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+
+      - name: Build dashboard
+        working-directory: dashboard
+        run: wails build -clean -nocolour -platform ${{ matrix.platform }}
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cd dashboard/build/bin
+          zip -r ${{ matrix.artifact }} pilot-dashboard.app
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd dashboard/build/bin
+          tar czf ${{ matrix.artifact }} pilot-dashboard
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dashboard/build/bin/${{ matrix.artifact }}
+
+  release:
+    needs: build-dashboard
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            pilot-dashboard-macos.zip/pilot-dashboard-macos.zip
+            pilot-dashboard-linux-amd64.tar.gz/pilot-dashboard-linux-amd64.tar.gz
+          generate_release_notes: true
