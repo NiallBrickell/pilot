@@ -3,9 +3,13 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 
 	"github.com/NiallBrickell/pilot/internal/config"
 	"github.com/NiallBrickell/pilot/internal/paths"
@@ -14,79 +18,237 @@ import (
 
 func init() {
 	rootCmd.AddCommand(&cobra.Command{
-		Use:   "install",
-		Short: "Set up ~/.pilot/ and print Claude Code hook configuration",
-		RunE:  runInstall,
+		Use:   "start",
+		Short: "Install hooks, start the server, and enable pilot",
+		RunE:  runStart,
+	})
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "stop",
+		Short: "Remove hooks, stop the server, and disable pilot",
+		RunE:  runStop,
 	})
 }
 
-func runInstall(cmd *cobra.Command, args []string) error {
-	// Auto-setup: create ~/.pilot/ and default config if needed
+func runStart(cmd *cobra.Command, args []string) error {
+	// Auto-setup ~/.pilot/
 	if err := paths.EnsureSetup(config.EmbeddedConfig()); err != nil {
 		return fmt.Errorf("failed to set up %s: %w", paths.PilotDir(), err)
 	}
-	fmt.Printf("Config directory: %s\n\n", paths.PilotDir())
 
 	pilotBin := findPilotBinary()
-	hookConfig := generateHookConfig(pilotBin)
 
-	configJSON, err := json.MarshalIndent(hookConfig, "", "  ")
-	if err != nil {
-		return err
+	// Install hooks into ~/.claude/settings.json
+	if err := installHooks(pilotBin); err != nil {
+		return fmt.Errorf("failed to install hooks: %w", err)
+	}
+	fmt.Println("Hooks installed")
+
+	// Kill any stale serve/evaluator
+	cfg := config.Load()
+	killPort(cfg.General.SSEPort)
+	killPort(cfg.General.EvaluatorPort)
+
+	// Stop existing serve if running
+	stopServeProcess()
+
+	// Start serve in background
+	serveCmd := exec.Command(pilotBin, "serve")
+	serveCmd.Stdout = nil
+	serveCmd.Stderr = nil
+	serveCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	if err := serveCmd.Start(); err != nil {
+		return fmt.Errorf("failed to start pilot serve: %w", err)
 	}
 
-	fmt.Println("=== pilot installation ===")
-	fmt.Println()
-	fmt.Println("1. Add to your Claude Code settings (~/.claude/settings.json):")
-	fmt.Println()
-	fmt.Println(string(configJSON))
-	fmt.Println()
-	fmt.Println("2. Or add hooks to your project settings (.claude/settings.json):")
-	fmt.Println()
-	fmt.Println(string(configJSON))
-	fmt.Println()
-	fmt.Println("3. Ensure ANTHROPIC_API_KEY is set in your environment or in:")
-	fmt.Printf("   %s\n", paths.EnvFile())
-	fmt.Println()
-	fmt.Printf("4. For the PTY wrapper (auto-respond to idle pauses), run:\n")
-	fmt.Printf("   %s wrap [claude args...]\n", pilotBin)
-	fmt.Println()
-	fmt.Println("5. Optionally symlink the binary:")
-	fmt.Printf("   ln -sf %s /usr/local/bin/pilot\n", pilotBin)
+	pidPath := paths.ServePidFile()
+	os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", serveCmd.Process.Pid)), 0644)
+	go serveCmd.Wait()
 
+	fmt.Printf("Server started (pid %d)\n", serveCmd.Process.Pid)
+	fmt.Println("Pilot is running")
 	return nil
 }
 
-func generateHookConfig(pilotBin string) map[string]any {
-	return map[string]any{
-		"hooks": map[string]any{
-			"PreToolUse": []any{
+func runStop(cmd *cobra.Command, args []string) error {
+	// Remove hooks from ~/.claude/settings.json
+	if err := uninstallHooks(); err != nil {
+		slog.Warn("Failed to remove hooks", "error", err)
+	} else {
+		fmt.Println("Hooks removed")
+	}
+
+	// Stop serve process
+	stopServeProcess()
+
+	// Kill any stale processes
+	cfg := config.Load()
+	killPort(cfg.General.SSEPort)
+	killPort(cfg.General.EvaluatorPort)
+
+	exec.Command("pkill", "-f", "pilot approve").Run()
+	exec.Command("pkill", "-f", "pilot on-stop").Run()
+
+	fmt.Println("Pilot stopped")
+	return nil
+}
+
+// --- hooks ---
+
+func claudeSettingsPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude", "settings.json")
+}
+
+func installHooks(pilotBin string) error {
+	path := claudeSettingsPath()
+
+	settings := make(map[string]any)
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &settings)
+	}
+
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = make(map[string]any)
+	}
+
+	hooks["PreToolUse"] = []any{
+		map[string]any{
+			"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch)$",
+			"hooks": []any{
 				map[string]any{
-					"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch)$",
-					"hooks": []any{
-						map[string]any{
-							"type":    "command",
-							"command": pilotBin + " approve",
-						},
-					},
-				},
-			},
-			"Stop": []any{
-				map[string]any{
-					"hooks": []any{
-						map[string]any{
-							"type":    "command",
-							"command": pilotBin + " on-stop",
-						},
-					},
+					"type":    "command",
+					"command": pilotBin + " approve",
 				},
 			},
 		},
 	}
+
+	hooks["Stop"] = []any{
+		map[string]any{
+			"hooks": []any{
+				map[string]any{
+					"type":    "command",
+					"command": pilotBin + " on-stop",
+				},
+			},
+		},
+	}
+
+	settings["hooks"] = hooks
+
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, data, 0644)
+}
+
+func uninstallHooks() error {
+	path := claudeSettingsPath()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+
+	settings := make(map[string]any)
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return err
+	}
+
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
+		return nil
+	}
+
+	bin := findPilotBinary()
+
+	// Remove pilot entries from PreToolUse
+	if pre, ok := hooks["PreToolUse"].([]any); ok {
+		var filtered []any
+		for _, entry := range pre {
+			entryJSON, _ := json.Marshal(entry)
+			if !strings.Contains(string(entryJSON), bin) {
+				filtered = append(filtered, entry)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(hooks, "PreToolUse")
+		} else {
+			hooks["PreToolUse"] = filtered
+		}
+	}
+
+	// Remove pilot entries from Stop
+	if stop, ok := hooks["Stop"].([]any); ok {
+		var filtered []any
+		for _, entry := range stop {
+			entryJSON, _ := json.Marshal(entry)
+			if !strings.Contains(string(entryJSON), bin) {
+				filtered = append(filtered, entry)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(hooks, "Stop")
+		} else {
+			hooks["Stop"] = filtered
+		}
+	}
+
+	if len(hooks) == 0 {
+		delete(settings, "hooks")
+	} else {
+		settings["hooks"] = hooks
+	}
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, out, 0644)
+}
+
+// --- process management ---
+
+func stopServeProcess() {
+	pidPath := paths.ServePidFile()
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		os.Remove(pidPath)
+		return
+	}
+	syscall.Kill(pid, syscall.SIGTERM)
+	os.Remove(pidPath)
+}
+
+func killPort(port int) {
+	if port == 0 {
+		return
+	}
+	out, err := exec.Command("lsof", fmt.Sprintf("-ti:%d", port)).Output()
+	if err != nil || len(out) == 0 {
+		return
+	}
+	for _, pidStr := range strings.Fields(strings.TrimSpace(string(out))) {
+		if pid, err := strconv.Atoi(pidStr); err == nil {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
 }
 
 func findPilotBinary() string {
-	// First: try the running binary's own path
 	exe, err := os.Executable()
 	if err == nil {
 		resolved, err := filepath.EvalSymlinks(exe)
@@ -95,7 +257,6 @@ func findPilotBinary() string {
 		}
 		return exe
 	}
-	// Fallback: check PATH
 	if p, err := exec.LookPath("pilot"); err == nil {
 		return p
 	}

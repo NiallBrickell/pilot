@@ -37,19 +37,14 @@ Claude Code session (any of 20+)
 ## Quick start
 
 ```bash
-# Clone and build
 git clone https://github.com/NiallBrickell/pilot.git
 cd pilot
-make install
-
-# Configure Claude Code hooks (auto-creates ~/.pilot/)
-pilot install
-
-# Start the server
-pilot serve
+make start
 ```
 
-That's it. Pilot auto-creates `~/.pilot/` with a default config on first run. No manual setup needed.
+That's it. `pilot start` builds, creates `~/.pilot/` with a default config, installs hooks into `~/.claude/settings.json`, and starts the server. No manual setup needed.
+
+To stop: `make stop` (or `./pilot stop`). This removes hooks and kills the server.
 
 ### Requirements
 
@@ -82,21 +77,17 @@ On the 1st, 5th, and every 25th tool call after a user message, pilot checks if 
 Pilot works completely standalone — the dashboard is optional.
 
 ```bash
-# Start the server (runs in foreground)
-pilot serve
-
-# Or via make
-make dev
+./pilot start    # install hooks, start server
+./pilot stop     # remove hooks, stop server
 ```
-
-The server starts the SSE event stream (default port 9721) and spawns the evaluator sidecar (default port 9722). All Claude Code sessions with pilot hooks will route through this server.
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `pilot install` | Set up `~/.pilot/` and print Claude Code hook config |
-| `pilot serve` | Start SSE server + evaluator sidecar |
+| `pilot start` | Install hooks, start server, enable pilot |
+| `pilot stop` | Remove hooks, stop server, disable pilot |
+| `pilot serve` | Start server in foreground (for debugging) |
 | `pilot approve` | PreToolUse hook handler (called by Claude Code) |
 | `pilot on-stop` | Stop hook handler (called by Claude Code) |
 | `pilot status` | Print current state as JSON |
