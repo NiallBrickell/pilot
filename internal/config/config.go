@@ -13,14 +13,20 @@ import (
 //go:embed pilot.toml
 var embeddedConfig string
 
+// EmbeddedConfig returns the compiled-in default config for auto-setup.
+func EmbeddedConfig() string {
+	return embeddedConfig
+}
+
 var (
 	cfg  *PilotConfig
 	once sync.Once
 )
 
 type PilotConfig struct {
-	General GeneralConfig `toml:"general"`
-	Prompts PromptsConfig `toml:"prompts"`
+	General  GeneralConfig  `toml:"general"`
+	Prompts  PromptsConfig  `toml:"prompts"`
+	Webhooks []WebhookConfig `toml:"webhooks"`
 }
 
 type GeneralConfig struct {
@@ -31,11 +37,26 @@ type GeneralConfig struct {
 	GracePeriodS          float64 `toml:"grace_period_s"`
 	EscalationTimeoutS    float64 `toml:"escalation_timeout_s"`
 	SSEPort               int     `toml:"sse_port"`
+
+	// Evaluator settings
+	EvaluatorPort       int `toml:"evaluator_port"`
+	MaxConcurrentEvals  int `toml:"max_concurrent_evals"`
+	EvaluatorTimeoutMs  int `toml:"evaluator_timeout_ms"`
+
+	// Interrogation settings
+	InterrogationConfidence float64 `toml:"interrogation_confidence"`
 }
 
 type PromptsConfig struct {
 	Approval    string `toml:"approval"`
 	AutoRespond string `toml:"auto_respond"`
+}
+
+// WebhookConfig defines an HTTP endpoint that receives pilot events.
+type WebhookConfig struct {
+	URL    string   `toml:"url"`
+	Events []string `toml:"events"` // e.g. ["action", "pending_approval", "approval_resolved"] — empty means all
+	Secret string   `toml:"secret"` // optional HMAC signing secret
 }
 
 func configPath() string {
@@ -56,6 +77,14 @@ func SSEBaseURL(cfg *PilotConfig) string {
 	port := cfg.General.SSEPort
 	if port == 0 {
 		port = 9721
+	}
+	return fmt.Sprintf("http://localhost:%d", port)
+}
+
+func EvaluatorURL(cfg *PilotConfig) string {
+	port := cfg.General.EvaluatorPort
+	if port == 0 {
+		port = 9722
 	}
 	return fmt.Sprintf("http://localhost:%d", port)
 }

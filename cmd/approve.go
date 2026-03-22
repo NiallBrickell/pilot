@@ -38,7 +38,7 @@ func init() {
 }
 
 func runApprove(cmd *cobra.Command, args []string) error {
-	paths.EnsureDir()
+	paths.EnsureSetup(config.EmbeddedConfig())
 	if !auth.IsClaudeAuthed() {
 		reason := "pilot: claude not authenticated, skipping"
 		return printJSON(hookResponse{

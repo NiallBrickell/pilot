@@ -26,3 +26,16 @@ func EnvFile() string      { return filepath.Join(PilotDir(), ".env") }
 func EnsureDir() error {
 	return os.MkdirAll(PilotDir(), 0755)
 }
+
+// EnsureSetup creates ~/.pilot/ and writes a default pilot.toml if one doesn't exist.
+// embeddedConfig is the default config content to write.
+func EnsureSetup(embeddedConfig string) error {
+	if err := EnsureDir(); err != nil {
+		return err
+	}
+	cfgPath := ConfigFile()
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		return os.WriteFile(cfgPath, []byte(embeddedConfig), 0644)
+	}
+	return nil
+}

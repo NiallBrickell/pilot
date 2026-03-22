@@ -20,16 +20,17 @@ import (
 	"github.com/google/uuid"
 )
 
-const evaluatorURL = "http://localhost:9722"
-
 // Server is a lightweight HTTP server providing SSE events and grace-period control.
 type Server struct {
-	broker     *Broker
-	pending    *PendingStore
-	port       int
-	srv        *http.Server
-	evalSem    chan struct{} // semaphore to limit concurrent haiku evaluations
-	toolCounts sync.Map     // session_id → *toolCounter
+	broker       *Broker
+	pending      *PendingStore
+	port         int
+	srv          *http.Server
+	evalSem      chan struct{} // semaphore to limit concurrent haiku evaluations
+	toolCounts   sync.Map     // session_id → *toolCounter
+	evaluatorURL string
+	evalTimeout  time.Duration
+	interrogationConfidence float64
 }
 
 // toolCounter tracks tool calls per session for checkpoint logic.
@@ -56,15 +57,39 @@ func (tc *toolCounter) shouldInterrogate(userMsgHash string) bool {
 	return n == 1 || n == 5 || (n > 5 && (n-5)%25 == 0)
 }
 
-func New(port int) *Server {
+func New(cfg *config.PilotConfig) *Server {
+	port := cfg.General.SSEPort
 	if port == 0 {
 		port = 9721
 	}
+	maxConcurrent := cfg.General.MaxConcurrentEvals
+	if maxConcurrent <= 0 {
+		maxConcurrent = 4
+	}
+	evalTimeout := time.Duration(cfg.General.EvaluatorTimeoutMs) * time.Millisecond
+	if evalTimeout <= 0 {
+		evalTimeout = 30 * time.Second
+	}
+	interrogationConf := cfg.General.InterrogationConfidence
+	if interrogationConf <= 0 {
+		interrogationConf = 0.7
+	}
+
+	broker := NewBroker()
+
+	// Register webhooks from config
+	for _, wh := range cfg.Webhooks {
+		broker.AddWebhook(wh)
+	}
+
 	return &Server{
-		broker:  NewBroker(),
-		pending: NewPendingStore(),
-		port:    port,
-		evalSem: make(chan struct{}, 4),
+		broker:                  broker,
+		pending:                 NewPendingStore(),
+		port:                    port,
+		evalSem:                 make(chan struct{}, maxConcurrent),
+		evaluatorURL:            config.EvaluatorURL(cfg),
+		evalTimeout:             evalTimeout,
+		interrogationConfidence: interrogationConf,
 	}
 }
 
@@ -357,8 +382,8 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 		"tool_input":    req.ToolInput,
 	})
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	evalResp, err := client.Post(evaluatorURL+"/evaluate-approval", "application/json", bytes.NewReader(evalBody))
+	client := &http.Client{Timeout: s.evalTimeout}
+	evalResp, err := client.Post(s.evaluatorURL+"/evaluate-approval", "application/json", bytes.NewReader(evalBody))
 	if err != nil {
 		slog.Warn("Evaluator sidecar not reachable", "error", err)
 		w.Header().Set("Content-Type", "application/json")
@@ -437,8 +462,8 @@ func (s *Server) handleEvaluateIdle(w http.ResponseWriter, r *http.Request) {
 		"transcript_context": req.TranscriptContext,
 	})
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	evalResp, err := client.Post(evaluatorURL+"/evaluate-idle", "application/json", bytes.NewReader(evalBody))
+	client := &http.Client{Timeout: s.evalTimeout}
+	evalResp, err := client.Post(s.evaluatorURL+"/evaluate-idle", "application/json", bytes.NewReader(evalBody))
 	if err != nil {
 		slog.Warn("Evaluator sidecar not reachable for idle", "error", err)
 		w.Header().Set("Content-Type", "application/json")
@@ -515,8 +540,8 @@ Only flag genuinely off-track behavior. Normal exploration, debugging, testing, 
 		"transcript_context": summary + "\n\n## TOOL CALL CLAUDE IS ABOUT TO MAKE:\nTool: " + toolName + "\nInput: " + truncateForInterrogate(toolInput, 500),
 	})
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Post(evaluatorURL+"/evaluate-idle", "application/json", bytes.NewReader(evalBody))
+	client := &http.Client{Timeout: s.evalTimeout}
+	resp, err := client.Post(s.evaluatorURL+"/evaluate-idle", "application/json", bytes.NewReader(evalBody))
 	if err != nil {
 		return "" // Can't reach evaluator, let it through
 	}
@@ -532,7 +557,7 @@ Only flag genuinely off-track behavior. Normal exploration, debugging, testing, 
 	}
 
 	// should_respond=true means Claude is off track and needs redirecting
-	if rawResult.ShouldRespond && rawResult.Message != "" && rawResult.Confidence >= 0.7 {
+	if rawResult.ShouldRespond && rawResult.Message != "" && rawResult.Confidence >= s.interrogationConfidence {
 		slog.Info("Interrogation: off track", "tool", toolName, "redirect", rawResult.Message)
 
 		// Emit SSE event

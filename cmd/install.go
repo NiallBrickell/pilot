@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/NiallBrickell/pilot/internal/config"
 	"github.com/NiallBrickell/pilot/internal/paths"
 	"github.com/spf13/cobra"
 )
@@ -14,12 +15,18 @@ import (
 func init() {
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "install",
-		Short: "Print installation instructions for Claude Code hooks",
+		Short: "Set up ~/.pilot/ and print Claude Code hook configuration",
 		RunE:  runInstall,
 	})
 }
 
 func runInstall(cmd *cobra.Command, args []string) error {
+	// Auto-setup: create ~/.pilot/ and default config if needed
+	if err := paths.EnsureSetup(config.EmbeddedConfig()); err != nil {
+		return fmt.Errorf("failed to set up %s: %w", paths.PilotDir(), err)
+	}
+	fmt.Printf("Config directory: %s\n\n", paths.PilotDir())
+
 	pilotBin := findPilotBinary()
 	hookConfig := generateHookConfig(pilotBin)
 

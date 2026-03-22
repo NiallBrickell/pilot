@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -25,16 +26,20 @@ func init() {
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
-	paths.EnsureDir()
+	paths.EnsureSetup(config.EmbeddedConfig())
 	cfg := config.Load()
 
-	// Find evaluator.mjs
+	// Find evaluator.mjs and pass config-driven port
 	evaluatorPath := findEvaluator()
 	evaluatorDir := filepath.Dir(evaluatorPath)
+	evaluatorPort := cfg.General.EvaluatorPort
+	if evaluatorPort == 0 {
+		evaluatorPort = 9722
+	}
 	stopEvaluator := make(chan struct{})
-	go superviseEvaluator(evaluatorPath, evaluatorDir, stopEvaluator)
+	go superviseEvaluator(evaluatorPath, evaluatorDir, evaluatorPort, stopEvaluator)
 
-	srv := server.New(cfg.General.SSEPort)
+	srv := server.New(cfg)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -68,12 +73,13 @@ func findEvaluator() string {
 }
 
 // superviseEvaluator starts the Node evaluator and restarts it if it crashes.
-func superviseEvaluator(evaluatorPath, workDir string, stop chan struct{}) {
+func superviseEvaluator(evaluatorPath, workDir string, port int, stop chan struct{}) {
 	for {
 		cmd := exec.Command("node", evaluatorPath)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Dir = workDir
+		cmd.Env = append(os.Environ(), fmt.Sprintf("PILOT_EVALUATOR_PORT=%d", port))
 
 		if err := cmd.Start(); err != nil {
 			slog.Warn("Failed to start evaluator", "error", err)

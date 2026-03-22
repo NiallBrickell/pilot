@@ -33,7 +33,7 @@ func Run(claudeArgs []string) error {
 	defer os.Remove(pidPath)
 
 	// Start SSE server
-	srv := server.New(cfg.General.SSEPort)
+	srv := server.New(cfg)
 	go func() {
 		if err := srv.Start(); err != nil {
 			slog.Warn("SSE server error", "error", err)

@@ -2,14 +2,35 @@
 # Edit this file to tune behavior without recompiling.
 
 [general]
-# Model for all evaluations (uses claude -p, so uses your Claude Code auth)
+# Model for all evaluations (uses Claude Agent SDK)
 model = "haiku"
-# Confidence threshold for auto-responding (0.0 - 1.0)
+# Confidence threshold for auto-responding to idle pauses (0.0 - 1.0)
 confidence_threshold = 0.8
 # How long to wait after output stops before checking for idle (ms)
 idle_timeout_ms = 3000
 # Max age of pending responses before discarding (seconds)
 pending_response_max_age_s = 30
+# SSE event stream port
+sse_port = 9721
+# Evaluator sidecar port
+evaluator_port = 9722
+# Max concurrent evaluator calls (higher = faster but more API usage)
+max_concurrent_evals = 4
+# Evaluator call timeout in milliseconds
+evaluator_timeout_ms = 15000
+# Confidence threshold for interrogation redirects (0.0 - 1.0)
+interrogation_confidence = 0.7
+# Grace period before auto-approvals take effect (0 = instant)
+grace_period_s = 0
+# How long to wait for human decision on escalated calls (seconds)
+escalation_timeout_s = 30
+
+# Webhooks — receive pilot events via HTTP POST.
+# Uncomment to enable. Events: action, pending_approval, approval_resolved
+# [[webhooks]]
+# url = "http://localhost:8080/pilot/events"
+# events = ["action", "pending_approval"]  # empty = all events
+# secret = ""  # optional HMAC-SHA256 signing secret
 
 [prompts]
 # System prompt for tool approval — ALL tool calls go through this
