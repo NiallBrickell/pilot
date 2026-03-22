@@ -151,13 +151,20 @@ export function PilotStatusWidget() {
             <button
               onClick={handleTogglePilot}
               disabled={loading === "pilot"}
-              className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
-                pilotOn
-                  ? "bg-success/15 text-success hover:bg-success/25"
-                  : "bg-muted text-muted-foreground hover:bg-muted/80"
+              className={`px-3 py-1 text-xs font-medium rounded transition-colors min-w-[72px] ${
+                loading === "pilot"
+                  ? "bg-accent text-muted-foreground"
+                  : pilotOn
+                    ? "bg-success/15 text-success hover:bg-success/25"
+                    : "bg-muted text-muted-foreground hover:bg-muted/80"
               }`}
             >
-              {loading === "pilot" ? "..." : pilotOn ? "On" : "Off"}
+              {loading === "pilot" ? (
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-3 h-3 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" />
+                  {pilotOn ? "Stopping" : "Starting"}
+                </span>
+              ) : pilotOn ? "On" : "Off"}
             </button>
           </div>
           <div className="flex items-center gap-4 text-sm text-muted-foreground">
