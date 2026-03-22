@@ -41,11 +41,6 @@ func pilotStatePath() string {
 	return filepath.Join(pilotDir(), "state.json")
 }
 
-func pilotBinaryExists() bool {
-	_, err := findPilotBinary()
-	return err == nil
-}
-
 func findPilotBinary() (string, error) {
 	// Check PATH first
 	if p, err := exec.LookPath("pilot"); err == nil {
@@ -60,7 +55,12 @@ func findPilotBinary() (string, error) {
 }
 
 func GetPilotStatus() PilotStatus {
-	available := pilotBinaryExists()
+	_, binErr := findPilotBinary()
+	hasBinary := binErr == nil
+	ssePort := readSSEPort()
+	sseAvailable := checkSSEAvailable(ssePort)
+	// Available if server is running OR we can find the binary
+	available := sseAvailable || hasBinary
 
 	path := pilotStatePath()
 	data, err := os.ReadFile(path)
@@ -117,8 +117,6 @@ func GetPilotStatus() PilotStatus {
 
 	hookStatus := CheckHooksInstalled()
 	wrapperRunning := IsWrapperRunning() || IsServeRunning()
-	ssePort := readSSEPort()
-	sseAvailable := checkSSEAvailable(ssePort)
 
 	return PilotStatus{
 		Available:     available,

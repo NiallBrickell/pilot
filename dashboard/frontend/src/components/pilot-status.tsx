@@ -121,7 +121,7 @@ export function PilotStatusWidget() {
     return (
       <div className="p-6">
         <p className="text-muted-foreground text-sm">
-          Pilot binary not found. Run <code className="bg-muted px-1 rounded">make install</code> first.
+          Pilot server not running. Run <code className="bg-muted px-1 rounded">pilot start</code> first.
         </p>
       </div>
     );
