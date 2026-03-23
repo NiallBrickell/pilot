@@ -1,25 +1,22 @@
 # Pilot Learnings
 
-## Evaluation approach: Agent SDK sidecar
+## Evaluation approach: direct Anthropic API
 
-We went through three iterations:
+We went through four iterations:
 
 | Approach | Latency | Issues |
 |----------|---------|--------|
 | `claude -p` per call | ~4-6s | Process spawn per tool call. 20 sessions = hundreds of processes = kernel panic |
 | `claude -p` via server with semaphore | ~4-6s | Still spawning processes, just rate-limited. Hangs if `claude -p` hangs (no timeout) |
-| Agent SDK sidecar (current) | ~2-3s | Long-running Node process, structured output, no process spawning |
+| Agent SDK sidecar (Node.js) | ~2-3s | Long-running Node process, structured output, no process spawning. Extra runtime dependency. |
+| Direct Anthropic API (current) | ~1.5-2s | Go HTTP calls to api.anthropic.com. No Node.js dependency. Structured output via `output_config`. |
 
-### Why the Agent SDK wins
+### Why direct API wins
 
-- **No process spawning** — the evaluator is a long-running HTTP server. Each evaluation is an HTTP call, not a fork+exec.
-- **Structured output** — `outputFormat: { type: "json_schema", schema: {...} }` gives us `msg.structured_output` with validated JSON. No parsing markdown code fences.
-- **Auth** — uses `CLAUDE_CODE_OAUTH_TOKEN` from `.env` (from `claude setup-token`). Setup token is scoped for Claude Code usage.
-- **Concurrency** — built-in semaphore (max 4 concurrent). Queue the rest instead of spawning unbounded processes.
-
-### Agent SDK structured output gotcha
-
-`maxTurns: 1` is not enough — the schema enforcement uses an extra turn internally. Use `maxTurns: 3` to be safe. The structured output comes back on `msg.structured_output`, NOT `msg.result` (which returns the raw text with markdown fences).
+- **No extra runtime** — pure Go, no Node.js dependency. One binary.
+- **Structured output** — `output_config: { format: { type: "json_schema", schema: {...} } }` gives validated JSON directly.
+- **Concurrency** — separate semaphores in Go (4 approval + 2 idle). Approvals can never be blocked by idle evaluations.
+- **Simpler deployment** — no sidecar process to supervise, no port management, no crash recovery loop.
 
 ## Three-layer approval hierarchy
 
@@ -87,12 +84,6 @@ Fix: extract the relevant field from JSON input before building the signature. `
 In long sessions, the user's task evolves. The interrogation system initially weighted the original request too heavily, flagging legitimate work as "off track" because it didn't match the first message.
 
 Fix: the prompt now says "MOST RECENT messages are the current task". Only flag genuinely off-track behaviour, not task evolution.
-
-## Orphaned evaluator on restart
-
-`pilot serve` starts a Node evaluator child process. `StopServe` killed the Go process but not the Node child, leaving it orphaned on port 9722. Next start: evaluator can't bind the port, crashes in a loop.
-
-Fix: kill both ports (9721 + 9722) on stop. Use `lsof -ti:PORT | xargs kill`. Supervisor auto-restarts the evaluator on crash with 2s backoff.
 
 ## Webhook integration pattern
 

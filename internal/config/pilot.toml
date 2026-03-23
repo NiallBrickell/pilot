@@ -2,7 +2,7 @@
 # Edit this file to tune behavior without recompiling.
 
 [general]
-# Model for all evaluations (uses Claude Agent SDK)
+# Model for evaluations (uses Anthropic API directly)
 model = "claude-haiku-4-5"
 # Confidence threshold for auto-responding to idle pauses (0.0 - 1.0)
 confidence_threshold = 0.8
@@ -12,8 +12,6 @@ idle_timeout_ms = 3000
 pending_response_max_age_s = 30
 # SSE event stream port
 sse_port = 9721
-# Evaluator sidecar port
-evaluator_port = 9722
 # Max concurrent evaluator calls (higher = faster but more API usage)
 max_concurrent_evals = 4
 # Evaluator call timeout in milliseconds

@@ -63,7 +63,6 @@ export namespace pilot {
 	    grace_period_s: number;
 	    escalation_timeout_s: number;
 	    sse_port: number;
-	    evaluator_port: number;
 	    max_concurrent_evals: number;
 	    evaluator_timeout_ms: number;
 	    interrogation_confidence: number;
@@ -81,7 +80,6 @@ export namespace pilot {
 	        this.grace_period_s = source["grace_period_s"];
 	        this.escalation_timeout_s = source["escalation_timeout_s"];
 	        this.sse_port = source["sse_port"];
-	        this.evaluator_port = source["evaluator_port"];
 	        this.max_concurrent_evals = source["max_concurrent_evals"];
 	        this.evaluator_timeout_ms = source["evaluator_timeout_ms"];
 	        this.interrogation_confidence = source["interrogation_confidence"];

@@ -39,7 +39,6 @@ type GeneralConfig struct {
 	SSEPort               int     `toml:"sse_port"`
 
 	// Evaluator settings
-	EvaluatorPort       int `toml:"evaluator_port"`
 	MaxConcurrentEvals  int `toml:"max_concurrent_evals"`
 	EvaluatorTimeoutMs  int `toml:"evaluator_timeout_ms"`
 
@@ -86,7 +85,6 @@ func SSEBaseURL(cfg *PilotConfig) string {
 	}
 	return fmt.Sprintf("http://localhost:%d", port)
 }
-
 
 func PidFilePath() string {
 	return paths.PidFile()

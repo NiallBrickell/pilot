@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/NiallBrickell/pilot/internal/anthropic"
 	"github.com/NiallBrickell/pilot/internal/approve"
 	"github.com/NiallBrickell/pilot/internal/config"
-	"github.com/NiallBrickell/pilot/internal/haiku"
 	"github.com/NiallBrickell/pilot/internal/state"
 
 	"github.com/google/uuid"
@@ -25,8 +25,11 @@ type Server struct {
 	pending      *PendingStore
 	port         int
 	srv          *http.Server
-	evalSem    chan struct{} // semaphore to limit concurrent haiku evaluations
-	toolCounts sync.Map     // session_id → *toolCounter
+	evalSem      chan struct{} // semaphore to limit concurrent approval evaluations
+	idleSem      chan struct{} // separate semaphore for idle evals (won't block approvals)
+	toolCounts   sync.Map     // session_id → *toolCounter
+	ai           *anthropic.Client
+	evalTimeout  time.Duration
 	interrogationConfidence float64
 	interrogationModel     string
 	interrogationEnabled   bool
@@ -65,6 +68,10 @@ func New(cfg *config.PilotConfig) *Server {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 4
 	}
+	evalTimeout := time.Duration(cfg.General.EvaluatorTimeoutMs) * time.Millisecond
+	if evalTimeout <= 0 {
+		evalTimeout = 15 * time.Second
+	}
 	interrogationConf := cfg.General.InterrogationConfidence
 	if interrogationConf <= 0 {
 		interrogationConf = 0.7
@@ -90,10 +97,22 @@ func New(cfg *config.PilotConfig) *Server {
 		pending:                 NewPendingStore(),
 		port:                    port,
 		evalSem:                 make(chan struct{}, maxConcurrent),
+		idleSem:                 make(chan struct{}, 2),
+		evalTimeout:             evalTimeout,
 		interrogationConfidence: interrogationConf,
 		interrogationModel:     interrogationModel,
 		interrogationEnabled:   interrogationEnabled,
 	}
+}
+
+// SetAI sets the Anthropic API client used for evaluations.
+func (s *Server) SetAI(client *anthropic.Client) {
+	s.ai = client
+}
+
+// EvalTimeout returns the configured evaluation timeout.
+func (s *Server) EvalTimeout() time.Duration {
+	return s.evalTimeout
 }
 
 func (s *Server) Broker() *Broker {
@@ -342,7 +361,7 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleEvaluate runs approval evaluation (layers 1-3).
+// handleEvaluate runs approval evaluation (layers 1-3) via the Anthropic API.
 func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -395,10 +414,16 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Layer 3: Call haiku directly (via claude -p)
-	haikuResult, err := haiku.EvaluateApproval(cfg, req.ToolName, req.ToolInput)
+	// Layer 3: Call Anthropic API directly
+	s.evalSem <- struct{}{}
+	defer func() { <-s.evalSem }()
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.evalTimeout)
+	defer cancel()
+
+	evalResult, err := s.ai.EvaluateApproval(ctx, cfg.Prompts.Approval, req.ToolName, req.ToolInput, "")
 	if err != nil {
-		slog.Error("ALERT: Haiku evaluation failed — falling through to user", "error", err)
+		slog.Warn("Anthropic API error (approval)", "error", err)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"decision":   "ask",
@@ -409,23 +434,11 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if haikuResult == nil {
-		// Layers 1+2 handled it inside EvaluateApproval (shouldn't happen since we checked above, but be safe)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"decision":   "approve",
-			"reason":     "passthrough",
-			"tool_name":  req.ToolName,
-			"cwd":        req.Cwd,
-			"session_id": req.SessionID,
-		})
-		return
-	}
 
 	decision := "deny"
 	actionType := "escalate"
 	confidence := 0.0
-	if haikuResult.Action == haiku.Allow {
+	if evalResult.Decision == anthropic.Approve {
 		decision = "approve"
 		actionType = "auto_approve"
 		confidence = 1.0
@@ -436,7 +449,7 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 	eventData, _ := json.Marshal(map[string]any{
 		"timestamp":   now.Format(time.RFC3339Nano),
 		"action_type": actionType,
-		"detail":      fmt.Sprintf("%s: %s", req.ToolName, haikuResult.Reason),
+		"detail":      fmt.Sprintf("%s: %s", req.ToolName, evalResult.Reason),
 		"confidence":  confidence,
 		"tool_name":   req.ToolName,
 		"tool_input":  req.ToolInput,
@@ -452,7 +465,7 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"decision":   decision,
-		"reason":     haikuResult.Reason,
+		"reason":     evalResult.Reason,
 		"confidence": confidence,
 		"tool_name":  req.ToolName,
 		"cwd":        req.Cwd,
@@ -517,7 +530,7 @@ func (s *Server) handleInterrogate(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"decision": "allow"})
 }
 
-// handleEvaluateIdle runs idle evaluation (should Claude get a nudge?).
+// handleEvaluateIdle runs idle evaluation via the Anthropic API.
 func (s *Server) handleEvaluateIdle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -535,9 +548,16 @@ func (s *Server) handleEvaluateIdle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := config.Load()
-	idleResult, err := haiku.EvaluateIdle(cfg, req.TranscriptContext)
+
+	s.idleSem <- struct{}{}
+	defer func() { <-s.idleSem }()
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.evalTimeout)
+	defer cancel()
+
+	idleResult, err := s.ai.EvaluateIdle(ctx, cfg.Prompts.AutoRespond, req.TranscriptContext, "")
 	if err != nil {
-		slog.Warn("Idle evaluation failed", "error", err)
+		slog.Warn("Anthropic API error (idle)", "error", err)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"should_respond": false,
@@ -617,12 +637,15 @@ The bar for intervention is HIGH. If you're not 90%+ sure Claude is seriously of
 If on track: {"should_respond": false, "message": "", "confidence": 0.9, "reasoning": "on track"}
 If seriously off track: {"should_respond": true, "message": "Stop — [what's wrong and what to do instead]", "confidence": 0.95, "reasoning": "..."}`
 
-	userMessage := summary + "\n\n## TOOL CALL CLAUDE IS ABOUT TO MAKE:\nTool: " + toolName + "\nInput: " + truncateForInterrogate(toolInput, 500)
+	transcriptContext := summary + "\n\n## TOOL CALL CLAUDE IS ABOUT TO MAKE:\nTool: " + toolName + "\nInput: " + truncateForInterrogate(toolInput, 500)
 
-	rawResult, err := haiku.EvaluateIdleWithPrompt(systemPrompt, userMessage, s.interrogationModel)
+	ctx, cancel := context.WithTimeout(context.Background(), s.evalTimeout)
+	defer cancel()
+
+	rawResult, err := s.ai.EvaluateIdle(ctx, systemPrompt, transcriptContext, s.interrogationModel)
 	if err != nil {
-		slog.Warn("Interrogation evaluation failed", "error", err)
-		return "" // Can't evaluate, let it through
+		slog.Warn("Interrogation API error — letting tool through (approval already passed)", "error", err)
+		return ""
 	}
 
 	// should_respond=true means Claude is off track and needs redirecting

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/NiallBrickell/pilot/internal/anthropic"
 	"github.com/NiallBrickell/pilot/internal/config"
 	"github.com/NiallBrickell/pilot/internal/paths"
 	"github.com/NiallBrickell/pilot/internal/server"
@@ -37,6 +38,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 	killStalePort(port)
 
 	srv := server.New(cfg)
+
+	// Initialize Anthropic API client for evaluations
+	ai, err := anthropic.NewClient(srv.EvalTimeout(), paths.EnvFile())
+	if err != nil {
+		slog.Warn("Anthropic API client not available — evaluations will fail", "error", err)
+	} else {
+		srv.SetAI(ai)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

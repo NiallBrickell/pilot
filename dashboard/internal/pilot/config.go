@@ -20,7 +20,6 @@ type PilotGeneralConfig struct {
 	GracePeriodS            float64 `json:"grace_period_s" toml:"grace_period_s"`
 	EscalationTimeoutS      float64 `json:"escalation_timeout_s" toml:"escalation_timeout_s"`
 	SSEPort                 int     `json:"sse_port" toml:"sse_port"`
-	EvaluatorPort           int     `json:"evaluator_port" toml:"evaluator_port"`
 	MaxConcurrentEvals      int     `json:"max_concurrent_evals" toml:"max_concurrent_evals"`
 	EvaluatorTimeoutMs      int     `json:"evaluator_timeout_ms" toml:"evaluator_timeout_ms"`
 	InterrogationConfidence float64 `json:"interrogation_confidence" toml:"interrogation_confidence"`

@@ -20,7 +20,7 @@ Claude Code session (any of 20+)
     │                         POST to pilot serve
     │                         ├─ Layer 1: Claude Code settings (no LLM)
     │                         ├─ Layer 2: Pilot rules (no LLM)
-    │                         ├─ Layer 3: Haiku via Agent SDK
+    │                         ├─ Layer 3: Haiku via Anthropic API
     │                         │
     │                         ├─ Approved → "allow"
     │                         ├─ Escalated → wait for human (timeout configurable)
@@ -49,7 +49,7 @@ To stop: `make stop` (or `./pilot stop`). This removes hooks and kills the serve
 ### Requirements
 
 - Go 1.22+
-- Node.js 18+ (for the evaluator sidecar)
+- An Anthropic API key (set `ANTHROPIC_API_KEY` in env or `~/.pilot/.env`)
 - Claude Code with auth configured (`claude auth login`)
 
 ## How it works
@@ -62,7 +62,7 @@ When a hook fires, `pilot approve` POSTs to `pilot serve`, which runs the three-
 
 1. **Claude Code settings** — reads `~/.claude/settings.json` and `.claude/settings.local.json` walking up from the session's cwd. First match wins. Respects `defaultMode: "acceptEdits"`.
 2. **Pilot rules** — fast pattern matching without LLM (extension point).
-3. **Haiku evaluation** — calls the evaluator sidecar using Claude Agent SDK with structured JSON output.
+3. **Haiku evaluation** — calls the Anthropic API directly with structured JSON output.
 
 ### Idle detection
 
@@ -111,8 +111,7 @@ All config lives in `~/.pilot/pilot.toml`. Created automatically on first run. E
 | `grace_period_s` | `0` | Delay before auto-approvals take effect (0 = instant) |
 | `escalation_timeout_s` | `30` | Wait for human on escalated calls (s) |
 | `sse_port` | `9721` | SSE event stream port |
-| `evaluator_port` | `9722` | Evaluator sidecar port |
-| `max_concurrent_evals` | `3+2` | Max concurrent Haiku calls (3 approval + 2 idle, separate semaphores) |
+| `max_concurrent_evals` | `4+2` | Max concurrent API calls (4 approval + 2 idle, separate semaphores) |
 | `evaluator_timeout_ms` | `15000` | Evaluator call timeout (ms) |
 | `interrogation_confidence` | `0.7` | Min confidence for interrogation redirects |
 
@@ -216,8 +215,7 @@ All runtime state is stored in `~/.pilot/` (override with `$PILOT_HOME`):
 | `PILOT_HOME` | `~/.pilot` | Base directory for all config and state |
 | `PILOT_CONFIG` | `$PILOT_HOME/pilot.toml` | Override config file path |
 | `PILOT_STATE_FILE` | `$PILOT_HOME/state.json` | Override state file path |
-| `PILOT_EVALUATOR_PATH` | *(next to binary)* | Override path to evaluator.mjs |
-| `PILOT_EVALUATOR_PORT` | `9722` | Evaluator sidecar port |
+| `ANTHROPIC_API_KEY` | *(none)* | Anthropic API key (also checked in `~/.pilot/.env`) |
 
 ## Integrating with your own app
 
