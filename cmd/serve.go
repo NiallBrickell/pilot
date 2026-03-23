@@ -6,9 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
-	"time"
 
 	"github.com/NiallBrickell/pilot/internal/config"
 	"github.com/NiallBrickell/pilot/internal/paths"
@@ -20,7 +20,7 @@ import (
 func init() {
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "serve",
-		Short: "Run the SSE event server + evaluator sidecar",
+		Short: "Run the SSE event server",
 		RunE:  runServe,
 	})
 }
@@ -29,15 +29,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 	paths.EnsureSetup(config.EmbeddedConfig())
 	cfg := config.Load()
 
-	// Find evaluator.mjs and pass config-driven port
-	evaluatorPath := findEvaluator()
-	evaluatorDir := filepath.Dir(evaluatorPath)
-	evaluatorPort := cfg.General.EvaluatorPort
-	if evaluatorPort == 0 {
-		evaluatorPort = 9722
+	// Kill any stale serve process on our port before starting
+	port := cfg.General.SSEPort
+	if port == 0 {
+		port = 9721
 	}
-	stopEvaluator := make(chan struct{})
-	go superviseEvaluator(evaluatorPath, evaluatorDir, evaluatorPort, stopEvaluator)
+	killStalePort(port)
 
 	srv := server.New(cfg)
 
@@ -47,7 +44,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 	go func() {
 		<-sigCh
 		slog.Info("Shutting down")
-		close(stopEvaluator)
 		srv.Shutdown(cmd.Context())
 		os.Exit(0)
 	}()
@@ -55,65 +51,29 @@ func runServe(cmd *cobra.Command, args []string) error {
 	return srv.Start()
 }
 
-// findEvaluator locates evaluator.mjs using a multi-step resolution:
-// 1. $PILOT_EVALUATOR_PATH env var
-// 2. Same directory as the running binary
-// 3. ~/.pilot/evaluator.mjs
-func findEvaluator() string {
-	if p := os.Getenv("PILOT_EVALUATOR_PATH"); p != "" {
-		return p
+func killStalePort(port int) {
+	out, err := exec.Command("lsof", fmt.Sprintf("-ti:%d", port)).Output()
+	if err != nil || len(out) == 0 {
+		return
 	}
-	if exe, err := os.Executable(); err == nil {
-		candidate := filepath.Join(filepath.Dir(exe), "evaluator.mjs")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
+	for _, pidStr := range strings.Fields(strings.TrimSpace(string(out))) {
+		pid, err := strconv.Atoi(pidStr)
+		if err != nil || pid == os.Getpid() {
+			continue
 		}
-	}
-	return filepath.Join(paths.PilotDir(), "evaluator.mjs")
-}
-
-// superviseEvaluator starts the Node evaluator and restarts it if it crashes.
-func superviseEvaluator(evaluatorPath, workDir string, port int, stop chan struct{}) {
-	for {
-		cmd := exec.Command("node", evaluatorPath)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Dir = workDir
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PILOT_EVALUATOR_PORT=%d", port))
-
-		if err := cmd.Start(); err != nil {
-			slog.Warn("Failed to start evaluator", "error", err)
-			select {
-			case <-stop:
-				return
-			case <-time.After(5 * time.Second):
-				continue
-			}
+		// Check if it's a pilot process — only kill our own
+		cmdOut, err := exec.Command("ps", "-p", pidStr, "-o", "command=").Output()
+		if err != nil {
+			continue
 		}
-
-		slog.Info("Evaluator sidecar started", "pid", cmd.Process.Pid)
-
-		// Wait for it to exit
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-
-		select {
-		case <-stop:
-			cmd.Process.Signal(syscall.SIGTERM)
-			select {
-			case <-done:
-			case <-time.After(3 * time.Second):
-				cmd.Process.Kill()
-			}
-			return
-		case err := <-done:
-			slog.Warn("Evaluator crashed, restarting in 2s", "error", err)
-			select {
-			case <-stop:
-				return
-			case <-time.After(2 * time.Second):
-				// Restart loop
-			}
+		cmd := strings.TrimSpace(string(cmdOut))
+		if strings.Contains(cmd, "pilot") {
+			slog.Info("Killing stale pilot process on port", "port", port, "pid", pid, "cmd", cmd)
+			syscall.Kill(pid, syscall.SIGTERM)
+		} else {
+			slog.Error("Port already in use by non-pilot process", "port", port, "pid", pid, "cmd", cmd)
+			fmt.Fprintf(os.Stderr, "Error: port %d is in use by another process (pid %d: %s)\n", port, pid, cmd)
+			os.Exit(1)
 		}
 	}
 }

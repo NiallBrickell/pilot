@@ -21,9 +21,9 @@ type claudeSettings struct {
 }
 
 // Built-in tools Claude Code always auto-approves regardless of settings.
+// Note: Read, Grep, Glob are NOT here — pilot evaluates them (e.g. out-of-cwd reads).
 var builtinAutoApproved = map[string]bool{
-	"Read": true, "Glob": true, "Grep": true, "LSP": true,
-	"TodoRead": true, "TaskGet": true, "TaskList": true,
+	"LSP": true, "TodoRead": true, "TaskGet": true, "TaskList": true,
 	"TaskCreate": true, "TaskUpdate": true,
 }
 
@@ -152,9 +152,21 @@ func extractKeyField(toolName, toolInput string) string {
 		if cmd, ok := parsed["command"].(string); ok {
 			return cmd
 		}
-	case "Edit", "Write", "NotebookEdit":
+	case "Edit", "Write", "NotebookEdit", "Read":
 		if fp, ok := parsed["file_path"].(string); ok {
 			return fp
+		}
+	case "Grep":
+		if p, ok := parsed["path"].(string); ok {
+			return p
+		}
+	case "Glob":
+		if p, ok := parsed["path"].(string); ok {
+			return p
+		}
+	case "Agent":
+		if desc, ok := parsed["description"].(string); ok {
+			return desc
 		}
 	case "WebFetch":
 		if url, ok := parsed["url"].(string); ok {

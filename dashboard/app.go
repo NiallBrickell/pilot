@@ -113,15 +113,12 @@ func (a *App) GetPilotStatus() pilot.PilotStatus {
 	return status
 }
 
-// InstallPilotHooks installs hooks and starts server.
+// InstallPilotHooks installs hooks and starts the server.
 func (a *App) InstallPilotHooks() error {
 	if err := pilot.InstallHooks(); err != nil {
 		return err
 	}
-	if !a.isServerRunning() {
-		return pilot.StartServe()
-	}
-	return nil
+	return pilot.StartServe()
 }
 
 // UninstallPilotHooks removes hooks and stops server.

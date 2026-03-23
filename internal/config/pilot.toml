@@ -3,7 +3,7 @@
 
 [general]
 # Model for all evaluations (uses Claude Agent SDK)
-model = "haiku"
+model = "claude-haiku-4-5"
 # Confidence threshold for auto-responding to idle pauses (0.0 - 1.0)
 confidence_threshold = 0.8
 # How long to wait after output stops before checking for idle (ms)

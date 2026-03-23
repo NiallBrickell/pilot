@@ -188,17 +188,9 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 
 	now := time.Now().UTC()
 
-	// Interrogation: immediate deny with redirect message, no escalation
-	if result.Source == "interrogate" {
-		confidence := 0.0
-		detail := fmt.Sprintf("%s — REDIRECTED: %s", toolSummary(toolName, toolInput), result.Reason)
-		_ = state.RecordAction(state.PilotAction{
-			Timestamp:  now,
-			ActionType: state.Escalate,
-			Detail:     detail,
-			Confidence: &confidence,
-		})
-		emitActionToSSE(cfg, now, "interrogate", detail, &confidence, toolName, toolInput, cwd, sessionID)
+	// Evaluator down or other infrastructure issue — fall through to user
+	if result.Decision == "ask" {
+		slog.Warn("Pilot infrastructure issue, falling through to user", "reason", result.Reason)
 		return printJSON(hookResponse{
 			HookSpecificOutput: preToolUseOutput{
 				HookEventName:            "PreToolUse",
@@ -248,30 +240,7 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 		})
 	}
 
-	// Interrogation: pilot detected Claude may be off-track.
-	// High confidence → deny directly, Claude course-corrects.
-	// Lower confidence → escalate to dashboard for human decision.
-	if result.Source == "interrogate" {
-		if result.Confidence >= 0.85 {
-			confidence := result.Confidence
-			_ = state.RecordAction(state.PilotAction{
-				Timestamp:  time.Now().UTC(),
-				ActionType: "interrogate",
-				Detail:     fmt.Sprintf("%s: %s", toolName, result.Reason),
-				Confidence: &confidence,
-			})
-			return printJSON(hookResponse{
-				HookSpecificOutput: preToolUseOutput{
-					HookEventName:            "PreToolUse",
-					PermissionDecision:       "deny",
-					PermissionDecisionReason: &result.Reason,
-				},
-			})
-		}
-		// Lower confidence — fall through to escalation below
-	}
-
-	// Escalation: haiku says deny (or low-confidence interrogation).
+	// Escalation: haiku says deny.
 	// Send to dashboard for human decision.
 	confidence := 0.0
 	outcome := requestDashboardDecision(cfg, toolName, toolInput, result.Reason, result.Source, confidence, cfg.General.EscalationTimeoutS)
@@ -391,9 +360,34 @@ func toolSummary(toolName, toolInput string) string {
 				}
 				return toolName + ": " + cmd
 			}
-		case "Edit", "Write", "NotebookEdit":
+		case "Edit", "Write", "NotebookEdit", "Read":
 			if fp, ok := parsed["file_path"].(string); ok {
 				return toolName + ": " + fp
+			}
+		case "Grep":
+			p, _ := parsed["pattern"].(string)
+			path, _ := parsed["path"].(string)
+			if p != "" {
+				summary := toolName + ": " + p
+				if path != "" {
+					summary += " in " + path
+				}
+				return summary
+			}
+		case "Glob":
+			pat, _ := parsed["pattern"].(string)
+			path, _ := parsed["path"].(string)
+			if pat != "" {
+				summary := toolName + ": " + pat
+				if path != "" {
+					summary += " in " + path
+				}
+				return summary
+			}
+		case "Agent":
+			desc, _ := parsed["description"].(string)
+			if desc != "" {
+				return toolName + ": " + desc
 			}
 		case "WebFetch":
 			if url, ok := parsed["url"].(string); ok {

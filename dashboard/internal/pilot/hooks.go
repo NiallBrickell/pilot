@@ -23,8 +23,9 @@ func CheckHooksInstalled() HookStatus {
 	if err != nil {
 		return HookStatus{Installed: false, SettingsPath: path}
 	}
-	// Check for any pilot hook regardless of binary path
-	installed := strings.Contains(string(data), "pilot approve")
+	// Check for pilot hooks regardless of binary path
+	content := string(data)
+	installed := strings.Contains(content, "pilot approve") && strings.Contains(content, "pilot interrogate")
 	return HookStatus{Installed: installed, SettingsPath: path}
 }
 
@@ -46,11 +47,21 @@ func InstallHooks() error {
 	}
 
 	pilotPreToolUse := map[string]any{
-		"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch)$",
+		"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch|Read|Grep|Glob|Agent)$",
 		"hooks": []any{
 			map[string]any{
 				"type":    "command",
 				"command": bin + " approve",
+			},
+		},
+	}
+
+	pilotInterrogate := map[string]any{
+		"matcher": ".*",
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": bin + " interrogate",
 			},
 		},
 	}
@@ -64,8 +75,8 @@ func InstallHooks() error {
 		},
 	}
 
-	// Keep existing non-pilot entries, replace/add pilot entry
-	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], pilotPreToolUse)
+	// Keep existing non-pilot entries, replace/add pilot entries
+	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], pilotPreToolUse, pilotInterrogate)
 	hooks["Stop"] = mergeHookEntries(hooks["Stop"], pilotStop)
 
 	settings["hooks"] = hooks
@@ -118,19 +129,28 @@ func UninstallHooks() error {
 	return os.WriteFile(path, out, 0644)
 }
 
-func mergeHookEntries(existing any, pilotEntry map[string]any) []any {
+func mergeHookEntries(existing any, pilotEntries ...map[string]any) []any {
 	var result []any
 	if arr, ok := existing.([]any); ok {
 		for _, entry := range arr {
 			entryJSON, _ := json.Marshal(entry)
-			if strings.Contains(string(entryJSON), "pilot approve") || strings.Contains(string(entryJSON), "pilot on-stop") {
+			if isPilotEntry(string(entryJSON)) {
 				continue // Remove old pilot entries
 			}
 			result = append(result, entry)
 		}
 	}
-	result = append(result, pilotEntry)
+	for _, entry := range pilotEntries {
+		result = append(result, entry)
+	}
 	return result
+}
+
+// isPilotEntry returns true if a serialized hook entry belongs to pilot.
+func isPilotEntry(entryJSON string) bool {
+	return strings.Contains(entryJSON, "pilot approve") ||
+		strings.Contains(entryJSON, "pilot interrogate") ||
+		strings.Contains(entryJSON, "pilot on-stop")
 }
 
 func removePilotEntries(hooks map[string]any, key string) {
@@ -141,7 +161,7 @@ func removePilotEntries(hooks map[string]any, key string) {
 	var filtered []any
 	for _, entry := range arr {
 		entryJSON, _ := json.Marshal(entry)
-		if !strings.Contains(string(entryJSON), "pilot approve") && !strings.Contains(string(entryJSON), "pilot on-stop") {
+		if !isPilotEntry(string(entryJSON)) {
 			filtered = append(filtered, entry)
 		}
 	}

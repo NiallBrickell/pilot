@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,8 +13,8 @@ import (
 
 	"github.com/NiallBrickell/pilot/internal/approve"
 	"github.com/NiallBrickell/pilot/internal/config"
+	"github.com/NiallBrickell/pilot/internal/haiku"
 	"github.com/NiallBrickell/pilot/internal/state"
-
 
 	"github.com/google/uuid"
 )
@@ -26,10 +25,8 @@ type Server struct {
 	pending      *PendingStore
 	port         int
 	srv          *http.Server
-	evalSem      chan struct{} // semaphore to limit concurrent haiku evaluations
-	toolCounts   sync.Map     // session_id → *toolCounter
-	evaluatorURL string
-	evalTimeout  time.Duration
+	evalSem    chan struct{} // semaphore to limit concurrent haiku evaluations
+	toolCounts sync.Map     // session_id → *toolCounter
 	interrogationConfidence float64
 	interrogationModel     string
 	interrogationEnabled   bool
@@ -68,10 +65,6 @@ func New(cfg *config.PilotConfig) *Server {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 4
 	}
-	evalTimeout := time.Duration(cfg.General.EvaluatorTimeoutMs) * time.Millisecond
-	if evalTimeout <= 0 {
-		evalTimeout = 30 * time.Second
-	}
 	interrogationConf := cfg.General.InterrogationConfidence
 	if interrogationConf <= 0 {
 		interrogationConf = 0.7
@@ -97,8 +90,6 @@ func New(cfg *config.PilotConfig) *Server {
 		pending:                 NewPendingStore(),
 		port:                    port,
 		evalSem:                 make(chan struct{}, maxConcurrent),
-		evaluatorURL:            config.EvaluatorURL(cfg),
-		evalTimeout:             evalTimeout,
 		interrogationConfidence: interrogationConf,
 		interrogationModel:     interrogationModel,
 		interrogationEnabled:   interrogationEnabled,
@@ -118,6 +109,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/approve/", s.handleApprove)
 	mux.HandleFunc("/reject/", s.handleReject)
 	mux.HandleFunc("/internal/evaluate", s.handleEvaluate)
+	mux.HandleFunc("/internal/interrogate", s.handleInterrogate)
 	mux.HandleFunc("/internal/evaluate-idle", s.handleEvaluateIdle)
 	mux.HandleFunc("/hooks/install", s.handleHooksInstall)
 	mux.HandleFunc("/hooks/uninstall", s.handleHooksUninstall)
@@ -350,7 +342,7 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleEvaluate runs approval evaluation via the Node evaluator sidecar.
+// handleEvaluate runs approval evaluation (layers 1-3).
 func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -371,28 +363,6 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Debug("Evaluate request", "tool", req.ToolName, "cwd", req.Cwd, "session", req.SessionID)
-
-	// Check if this is an interrogation point
-	if s.interrogationEnabled && req.SessionID != "" && req.TranscriptPath != "" {
-		raw, _ := s.toolCounts.LoadOrStore(req.SessionID, &toolCounter{})
-		tc := raw.(*toolCounter)
-		if tc.shouldInterrogate(req.UserMsgHash) {
-			slog.Info("Interrogating", "tool", req.ToolName, "session", req.SessionID)
-			if redirect := s.interrogate(req.TranscriptPath, req.ToolName, req.ToolInput, req.Cwd); redirect != "" {
-				slog.Info("Interrogation: redirecting", "tool", req.ToolName, "redirect", redirect[:min(len(redirect), 100)])
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]any{
-					"decision":   "deny",
-					"reason":     redirect,
-					"source":     "interrogate",
-					"tool_name":  req.ToolName,
-					"cwd":        req.Cwd,
-					"session_id": req.SessionID,
-				})
-				return
-			}
-		}
-	}
 
 	cfg := config.Load()
 
@@ -425,47 +395,48 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Layer 3: Call Node evaluator sidecar (haiku)
-	evalBody, _ := json.Marshal(map[string]string{
-		"system_prompt": cfg.Prompts.Approval,
-		"tool_name":     req.ToolName,
-		"tool_input":    req.ToolInput,
-	})
-
-	client := &http.Client{Timeout: s.evalTimeout}
-	evalResp, err := client.Post(s.evaluatorURL+"/evaluate-approval", "application/json", bytes.NewReader(evalBody))
+	// Layer 3: Call haiku directly (via claude -p)
+	haikuResult, err := haiku.EvaluateApproval(cfg, req.ToolName, req.ToolInput)
 	if err != nil {
-		slog.Warn("Evaluator sidecar not reachable", "error", err)
+		slog.Error("ALERT: Haiku evaluation failed — falling through to user", "error", err)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"decision":   "deny",
-			"reason":     fmt.Sprintf("evaluator error: %v", err),
+			"decision":   "ask",
+			"reason":     fmt.Sprintf("pilot alert: evaluation failed (%v)", err),
 			"tool_name":  req.ToolName,
 			"cwd":        req.Cwd,
 			"session_id": req.SessionID,
 		})
 		return
 	}
-	defer evalResp.Body.Close()
-
-	var evalResult struct {
-		Decision string `json:"decision"`
-		Reason   string `json:"reason"`
+	if haikuResult == nil {
+		// Layers 1+2 handled it inside EvaluateApproval (shouldn't happen since we checked above, but be safe)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"decision":   "approve",
+			"reason":     "passthrough",
+			"tool_name":  req.ToolName,
+			"cwd":        req.Cwd,
+			"session_id": req.SessionID,
+		})
+		return
 	}
-	json.NewDecoder(evalResp.Body).Decode(&evalResult)
 
-	// Emit SSE event
-	now := time.Now().UTC()
+	decision := "deny"
 	actionType := "escalate"
 	confidence := 0.0
-	if evalResult.Decision == "approve" {
+	if haikuResult.Action == haiku.Allow {
+		decision = "approve"
 		actionType = "auto_approve"
 		confidence = 1.0
 	}
+
+	// Emit SSE event
+	now := time.Now().UTC()
 	eventData, _ := json.Marshal(map[string]any{
 		"timestamp":   now.Format(time.RFC3339Nano),
 		"action_type": actionType,
-		"detail":      fmt.Sprintf("%s: %s", req.ToolName, evalResult.Reason),
+		"detail":      fmt.Sprintf("%s: %s", req.ToolName, haikuResult.Reason),
 		"confidence":  confidence,
 		"tool_name":   req.ToolName,
 		"tool_input":  req.ToolInput,
@@ -480,8 +451,8 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"decision":   evalResult.Decision,
-		"reason":     evalResult.Reason,
+		"decision":   decision,
+		"reason":     haikuResult.Reason,
 		"confidence": confidence,
 		"tool_name":  req.ToolName,
 		"cwd":        req.Cwd,
@@ -489,7 +460,64 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleEvaluateIdle runs idle evaluation via the Node evaluator sidecar.
+// handleInterrogate is a standalone endpoint for the interrogation hook.
+// It runs independently of the approval flow on ALL tool calls.
+func (s *Server) handleInterrogate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		ToolName       string `json:"tool_name"`
+		ToolInput      string `json:"tool_input"`
+		Cwd            string `json:"cwd"`
+		SessionID      string `json:"session_id"`
+		TranscriptPath string `json:"transcript_path"`
+		UserMsgHash    string `json:"user_msg_hash"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Quick path: interrogation disabled or missing context
+	if !s.interrogationEnabled || req.SessionID == "" || req.TranscriptPath == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"decision": "allow"})
+		return
+	}
+
+	// Check if this tool call should trigger an interrogation checkpoint
+	raw, _ := s.toolCounts.LoadOrStore(req.SessionID, &toolCounter{})
+	tc := raw.(*toolCounter)
+	if !tc.shouldInterrogate(req.UserMsgHash) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"decision": "allow"})
+		return
+	}
+
+	slog.Info("Interrogating", "tool", req.ToolName, "session", req.SessionID)
+	redirect := s.interrogate(req.TranscriptPath, req.ToolName, req.ToolInput, req.Cwd)
+	if redirect != "" {
+		slog.Info("Interrogation: redirecting", "tool", req.ToolName, "redirect", redirect[:min(len(redirect), 100)])
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"decision":   "deny",
+			"reason":     redirect,
+			"source":     "interrogate",
+			"tool_name":  req.ToolName,
+			"cwd":        req.Cwd,
+			"session_id": req.SessionID,
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"decision": "allow"})
+}
+
+// handleEvaluateIdle runs idle evaluation (should Claude get a nudge?).
 func (s *Server) handleEvaluateIdle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -507,45 +535,30 @@ func (s *Server) handleEvaluateIdle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := config.Load()
-	evalBody, _ := json.Marshal(map[string]string{
-		"system_prompt":      cfg.Prompts.AutoRespond,
-		"transcript_context": req.TranscriptContext,
-	})
-
-	client := &http.Client{Timeout: s.evalTimeout}
-	evalResp, err := client.Post(s.evaluatorURL+"/evaluate-idle", "application/json", bytes.NewReader(evalBody))
+	idleResult, err := haiku.EvaluateIdle(cfg, req.TranscriptContext)
 	if err != nil {
-		slog.Warn("Evaluator sidecar not reachable for idle", "error", err)
+		slog.Warn("Idle evaluation failed", "error", err)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"should_respond": false,
 			"message":        "",
 			"confidence":     0,
-			"reasoning":      fmt.Sprintf("evaluator error: %v", err),
+			"reasoning":      fmt.Sprintf("evaluation error: %v", err),
 		})
 		return
 	}
-	defer evalResp.Body.Close()
-
-	var evalResult struct {
-		ShouldRespond bool    `json:"should_respond"`
-		Message       string  `json:"message"`
-		Confidence    float64 `json:"confidence"`
-		Reasoning     string  `json:"reasoning"`
-	}
-	json.NewDecoder(evalResp.Body).Decode(&evalResult)
 
 	// Emit SSE event
 	now := time.Now().UTC()
 	actionType := "auto_respond_skipped"
-	if evalResult.ShouldRespond {
+	if idleResult.ShouldRespond {
 		actionType = "auto_respond"
 	}
 	eventData, _ := json.Marshal(map[string]any{
 		"timestamp":   now.Format(time.RFC3339Nano),
 		"action_type": actionType,
-		"detail":      evalResult.Message,
-		"confidence":  evalResult.Confidence,
+		"detail":      idleResult.Message,
+		"confidence":  idleResult.Confidence,
 		"cwd":         req.Cwd,
 		"session_id":  req.SessionID,
 	})
@@ -557,10 +570,10 @@ func (s *Server) handleEvaluateIdle(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"should_respond": evalResult.ShouldRespond,
-		"message":        evalResult.Message,
-		"confidence":     evalResult.Confidence,
-		"reasoning":      evalResult.Reasoning,
+		"should_respond": idleResult.ShouldRespond,
+		"message":        idleResult.Message,
+		"confidence":     idleResult.Confidence,
+		"reasoning":      idleResult.Reasoning,
 	})
 }
 
@@ -580,8 +593,7 @@ func (s *Server) interrogate(transcriptPath, toolName, toolInput, cwd string) st
 		"recent_user_preview", truncateForInterrogate(summary[max(0, len(summary)-500):], 500),
 	)
 
-	evalBody, _ := json.Marshal(map[string]string{
-		"system_prompt": `You are a safety net for an AI coding assistant (Claude Code). You RARELY intervene.
+	systemPrompt := `You are a safety net for an AI coding assistant (Claude Code). You RARELY intervene.
 
 You'll see conversation context and the tool call Claude is about to make. Only flag SERIOUSLY off-track behaviour.
 
@@ -603,25 +615,14 @@ DO NOT INTERVENE for:
 The bar for intervention is HIGH. If you're not 90%+ sure Claude is seriously off track, say it's on track.
 
 If on track: {"should_respond": false, "message": "", "confidence": 0.9, "reasoning": "on track"}
-If seriously off track: {"should_respond": true, "message": "Stop — [what's wrong and what to do instead]", "confidence": 0.95, "reasoning": "..."}`,
-		"transcript_context": summary + "\n\n## TOOL CALL CLAUDE IS ABOUT TO MAKE:\nTool: " + toolName + "\nInput: " + truncateForInterrogate(toolInput, 500),
-		"model":              s.interrogationModel,
-	})
+If seriously off track: {"should_respond": true, "message": "Stop — [what's wrong and what to do instead]", "confidence": 0.95, "reasoning": "..."}`
 
-	client := &http.Client{Timeout: s.evalTimeout}
-	resp, err := client.Post(s.evaluatorURL+"/evaluate-idle", "application/json", bytes.NewReader(evalBody))
+	userMessage := summary + "\n\n## TOOL CALL CLAUDE IS ABOUT TO MAKE:\nTool: " + toolName + "\nInput: " + truncateForInterrogate(toolInput, 500)
+
+	rawResult, err := haiku.EvaluateIdleWithPrompt(systemPrompt, userMessage, s.interrogationModel)
 	if err != nil {
-		return "" // Can't reach evaluator, let it through
-	}
-	defer resp.Body.Close()
-
-	var rawResult struct {
-		ShouldRespond bool    `json:"should_respond"`
-		Message       string  `json:"message"`
-		Confidence    float64 `json:"confidence"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&rawResult); err != nil {
-		return ""
+		slog.Warn("Interrogation evaluation failed", "error", err)
+		return "" // Can't evaluate, let it through
 	}
 
 	// should_respond=true means Claude is off track and needs redirecting

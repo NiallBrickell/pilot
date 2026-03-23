@@ -33,7 +33,7 @@ func Evaluate(cfg *config.PilotConfig, toolName, toolInput, cwd string) *Decisio
 	}
 
 	// Layer 2: Pilot rules
-	if result := CheckPilotRules(cfg, toolName, toolInput); result != "" {
+	if result := CheckPilotRules(cfg, toolName, toolInput, cwd); result != "" {
 		return &Decision{
 			Action: result,
 			Reason: "matched pilot rule",

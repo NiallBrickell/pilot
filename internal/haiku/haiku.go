@@ -1,18 +1,24 @@
 package haiku
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"os/exec"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/NiallBrickell/pilot/internal/approve"
 	"github.com/NiallBrickell/pilot/internal/config"
 )
+
+func init() {
+	loadPilotEnv()
+}
 
 type EvalAction int
 
@@ -48,123 +54,135 @@ func EvaluateApproval(cfg *config.PilotConfig, toolName, toolInput string) (*Eva
 
 	// This tool would normally prompt the user — ask Haiku to decide.
 	userMessage := fmt.Sprintf("Tool: %s\nInput: %s", toolName, truncate(toolInput, 2000))
-	schema := `{"type":"object","properties":{"decision":{"type":"string","enum":["approve","deny"]},"reason":{"type":"string"}},"required":["decision","reason"]}`
 
-	result, err := callHaiku(cfg, cfg.Prompts.Approval, userMessage, schema)
+	result, err := callAnthropic(cfg.General.Model, cfg.Prompts.Approval, userMessage)
 	if err != nil {
 		return nil, err
 	}
 
-	decisionStr, _ := result["decision"].(string)
-	reason, _ := result["reason"].(string)
+	var parsed struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		return nil, fmt.Errorf("parsing approval response: %w (raw: %s)", err, result)
+	}
+
 	action := Deny
-	if decisionStr == "approve" {
+	if parsed.Decision == "approve" {
 		action = Allow
 	}
-	slog.Info("Haiku decision", "tool", toolName, "action", decisionStr, "reason", reason)
-	return &EvalDecision{Action: action, Reason: reason}, nil
+	slog.Info("Haiku decision", "tool", toolName, "action", parsed.Decision, "reason", parsed.Reason)
+	return &EvalDecision{Action: action, Reason: parsed.Reason}, nil
 }
 
 // EvaluateIdle evaluates whether Claude's pause needs an auto-response.
-func EvaluateIdle(cfg *config.PilotConfig, context string) (*AutoResponse, error) {
+func EvaluateIdle(cfg *config.PilotConfig, ctx string) (*AutoResponse, error) {
 	userMessage := fmt.Sprintf(
 		"Here is the recent Claude Code output. Claude has stopped and is showing the input prompt. Should I auto-respond?\n\n---\n%s",
-		truncate(context, 4000),
+		truncate(ctx, 4000),
 	)
-	schema := `{"type":"object","properties":{"should_respond":{"type":"boolean"},"message":{"type":"string"},"confidence":{"type":"number"},"reasoning":{"type":"string"}},"required":["should_respond","message","confidence","reasoning"]}`
 
-	result, err := callHaiku(cfg, cfg.Prompts.AutoRespond, userMessage, schema)
+	return evaluateIdleInternal(cfg.General.Model, cfg.Prompts.AutoRespond, userMessage, cfg.General.ConfidenceThreshold)
+}
+
+// EvaluateIdleWithPrompt is like EvaluateIdle but uses a custom system prompt and model.
+// Used by the interrogation system which has its own prompt and model config.
+func EvaluateIdleWithPrompt(systemPrompt, userMessage, model string) (*AutoResponse, error) {
+	return evaluateIdleInternal(model, systemPrompt, userMessage, 0)
+}
+
+func evaluateIdleInternal(model, systemPrompt, userMessage string, confidenceThreshold float64) (*AutoResponse, error) {
+	result, err := callAnthropic(model, systemPrompt, userMessage)
 	if err != nil {
 		return nil, err
 	}
 
-	shouldRespond, _ := result["should_respond"].(bool)
-	message, _ := result["message"].(string)
-	confidence, _ := result["confidence"].(float64)
-	reasoning, _ := result["reasoning"].(string)
-
-	resp := &AutoResponse{
-		ShouldRespond: shouldRespond,
-		Message:       message,
-		Confidence:    confidence,
-		Reasoning:     reasoning,
+	var resp AutoResponse
+	if err := json.Unmarshal([]byte(result), &resp); err != nil {
+		return nil, fmt.Errorf("parsing idle response: %w (raw: %s)", err, result)
 	}
 
-	if resp.ShouldRespond && resp.Confidence >= cfg.General.ConfidenceThreshold {
-		slog.Info("Auto-responding", "confidence", fmt.Sprintf("%.0f%%", resp.Confidence*100), "message", resp.Message)
-		return resp, nil
-	} else if resp.ShouldRespond {
-		slog.Info("Would auto-respond but confidence too low",
-			"confidence", fmt.Sprintf("%.0f%%", resp.Confidence*100),
-			"threshold", fmt.Sprintf("%.0f%%", cfg.General.ConfidenceThreshold*100),
-			"message", resp.Message,
-		)
-		resp.ShouldRespond = false
-		return resp, nil
+	if confidenceThreshold > 0 {
+		if resp.ShouldRespond && resp.Confidence >= confidenceThreshold {
+			slog.Info("Auto-responding", "confidence", fmt.Sprintf("%.0f%%", resp.Confidence*100), "message", resp.Message)
+		} else if resp.ShouldRespond {
+			slog.Info("Would auto-respond but confidence too low",
+				"confidence", fmt.Sprintf("%.0f%%", resp.Confidence*100),
+				"threshold", fmt.Sprintf("%.0f%%", confidenceThreshold*100),
+				"message", resp.Message,
+			)
+			resp.ShouldRespond = false
+		} else {
+			slog.Debug("Not auto-responding", "reasoning", resp.Reasoning)
+		}
 	}
 
-	slog.Debug("Not auto-responding", "reasoning", resp.Reasoning)
-	return resp, nil
+	return &resp, nil
 }
 
-func callHaiku(cfg *config.PilotConfig, systemPrompt, userMessage, jsonSchema string) (map[string]any, error) {
+func callAnthropic(model, systemPrompt, userMessage string) (string, error) {
+	client := anthropic.NewClient()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "claude",
-		"-p",
-		"--model", cfg.General.Model,
-		"--output-format", "json",
-		"--json-schema", jsonSchema,
-		"--system-prompt", systemPrompt,
-		"--tools", "",
-		"--no-session-persistence",
-		"--settings", `{"hooks":{}}`,
-	)
-
-	stdin, err := cmd.StdinPipe()
+	msg, err := client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     model,
+		MaxTokens: 1024,
+		System: []anthropic.TextBlockParam{
+			{Text: systemPrompt + "\n\nRespond with ONLY valid JSON, no markdown or explanation."},
+		},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(userMessage)),
+		},
+	})
 	if err != nil {
-		return nil, fmt.Errorf("creating stdin pipe: %w", err)
+		return "", fmt.Errorf("anthropic API error: %w", err)
 	}
 
-	cmd.Stderr = io.Discard
-
-	out, err := func() ([]byte, error) {
-		go func() {
-			io.WriteString(stdin, userMessage)
-			stdin.Close()
-		}()
-		return cmd.Output()
-	}()
-
-	if ctx.Err() == context.DeadlineExceeded {
-		return nil, fmt.Errorf("claude -p timed out after 30s")
-	}
-
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("claude -p failed (%d): %s", exitErr.ExitCode(), string(exitErr.Stderr))
+	// Extract text from response
+	for _, block := range msg.Content {
+		if block.Type == "text" {
+			text := strings.TrimSpace(block.Text)
+			// Strip markdown code fences if present
+			text = strings.TrimPrefix(text, "```json")
+			text = strings.TrimPrefix(text, "```")
+			text = strings.TrimSuffix(text, "```")
+			return strings.TrimSpace(text), nil
 		}
-		return nil, fmt.Errorf("claude -p failed: %w", err)
 	}
 
-	raw := strings.TrimSpace(string(out))
-	var envelope map[string]any
-	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
-		return nil, fmt.Errorf("parsing response: %w", err)
-	}
+	return "", fmt.Errorf("no text content in anthropic response")
+}
 
-	structured, ok := envelope["structured_output"]
-	if !ok {
-		return nil, fmt.Errorf("no structured_output in response: %s", raw)
+// loadPilotEnv loads env vars from ~/.pilot/.env if ANTHROPIC_API_KEY isn't already set.
+func loadPilotEnv() {
+	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+		return
 	}
-
-	result, ok := structured.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("structured_output is not an object: %s", raw)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
 	}
+	envPath := filepath.Join(home, ".pilot", ".env")
+	f, err := os.Open(envPath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
 
-	return result, nil
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if ok {
+			os.Setenv(strings.TrimSpace(key), strings.TrimSpace(val))
+		}
+	}
 }
 
 func truncate(s string, maxLen int) string {

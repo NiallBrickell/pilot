@@ -43,10 +43,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println("Hooks installed")
 
-	// Kill any stale serve/evaluator
+	// Kill any stale serve processes
 	cfg := config.Load()
 	killPort(cfg.General.SSEPort)
-	killPort(cfg.General.EvaluatorPort)
 
 	// Stop existing serve if running
 	stopServeProcess()
@@ -84,9 +83,9 @@ func runStop(cmd *cobra.Command, args []string) error {
 	// Kill any stale processes
 	cfg := config.Load()
 	killPort(cfg.General.SSEPort)
-	killPort(cfg.General.EvaluatorPort)
 
 	exec.Command("pkill", "-f", "pilot approve").Run()
+	exec.Command("pkill", "-f", "pilot interrogate").Run()
 	exec.Command("pkill", "-f", "pilot on-stop").Run()
 
 	fmt.Println("Pilot stopped")
@@ -114,11 +113,21 @@ func installHooks(pilotBin string) error {
 	}
 
 	pilotPreToolUse := map[string]any{
-		"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch)$",
+		"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch|Read|Grep|Glob|Agent)$",
 		"hooks": []any{
 			map[string]any{
 				"type":    "command",
 				"command": pilotBin + " approve",
+			},
+		},
+	}
+
+	pilotInterrogate := map[string]any{
+		"matcher": ".*",
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": pilotBin + " interrogate",
 			},
 		},
 	}
@@ -132,9 +141,9 @@ func installHooks(pilotBin string) error {
 		},
 	}
 
-	// For each hook type: keep existing non-pilot entries, replace/add pilot entry
-	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], pilotPreToolUse, pilotBin)
-	hooks["Stop"] = mergeHookEntries(hooks["Stop"], pilotStop, pilotBin)
+	// For each hook type: keep existing non-pilot entries, replace/add pilot entries
+	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], pilotBin, pilotPreToolUse, pilotInterrogate)
+	hooks["Stop"] = mergeHookEntries(hooks["Stop"], pilotBin, pilotStop)
 
 	settings["hooks"] = hooks
 
@@ -150,17 +159,18 @@ func installHooks(pilotBin string) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// mergeHookEntries keeps existing non-pilot hook entries and adds/replaces the pilot entry.
-func mergeHookEntries(existing any, pilotEntry map[string]any, pilotBin string) []any {
+// mergeHookEntries keeps existing non-pilot hook entries and adds/replaces pilot entries.
+func mergeHookEntries(existing any, pilotBin string, pilotEntries ...map[string]any) []any {
 	var result []any
 
 	if arr, ok := existing.([]any); ok {
 		for _, entry := range arr {
 			entryJSON, _ := json.Marshal(entry)
-			if strings.Contains(string(entryJSON), pilotBin) {
-				continue // Remove old pilot entry, we'll add the new one
+			s := string(entryJSON)
+			if strings.Contains(s, pilotBin) {
+				continue // Remove old pilot entry, we'll add the new ones
 			}
-			if strings.Contains(string(entryJSON), "pilot approve") || strings.Contains(string(entryJSON), "pilot on-stop") {
+			if strings.Contains(s, "pilot approve") || strings.Contains(s, "pilot interrogate") || strings.Contains(s, "pilot on-stop") {
 				// Old pilot binary at a different path — warn and skip
 				fmt.Fprintf(os.Stderr, "Warning: replacing existing pilot hook entry (old path)\n")
 				continue
@@ -169,7 +179,9 @@ func mergeHookEntries(existing any, pilotEntry map[string]any, pilotBin string) 
 		}
 	}
 
-	result = append(result, pilotEntry)
+	for _, entry := range pilotEntries {
+		result = append(result, entry)
+	}
 	return result
 }
 

@@ -81,10 +81,10 @@ func FindPilotBinary() (string, error) {
 }
 
 // StartServe launches `pilot serve` in the background.
+// Always stops any existing serve first to pick up binary changes.
 func StartServe() error {
-	if IsServeRunning() {
-		return nil
-	}
+	StopServe()
+	KillLingering()
 
 	bin, err := FindPilotBinary()
 	if err != nil {
@@ -108,9 +108,36 @@ func StartServe() error {
 }
 
 // StopServe stops the background `pilot serve` process.
+// Kills by PID file first, then by port as a fallback.
 func StopServe() error {
 	pidPath := filepath.Join(pilotDir(), "pilot-serve.pid")
-	return stopPid(pidPath)
+	_ = stopPid(pidPath)
+	// Fallback: kill anything on our port in case pid file was stale
+	killPort(9721)
+	return nil
+}
+
+func killPort(port int) {
+	out, err := exec.Command("lsof", fmt.Sprintf("-ti:%d", port)).Output()
+	if err != nil || len(out) == 0 {
+		return
+	}
+	for _, pidStr := range strings.Fields(strings.TrimSpace(string(out))) {
+		if pid, err := strconv.Atoi(pidStr); err == nil {
+			syscall.Kill(pid, syscall.SIGTERM)
+		}
+	}
+	// Wait briefly then force kill
+	time.Sleep(500 * time.Millisecond)
+	out, err = exec.Command("lsof", fmt.Sprintf("-ti:%d", port)).Output()
+	if err != nil || len(out) == 0 {
+		return
+	}
+	for _, pidStr := range strings.Fields(strings.TrimSpace(string(out))) {
+		if pid, err := strconv.Atoi(pidStr); err == nil {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
 }
 
 // IsServeRunning checks if the serve process is alive.
@@ -119,9 +146,10 @@ func IsServeRunning() bool {
 	return isPidAlive(pidPath)
 }
 
-// KillLingering kills any running `pilot approve` or `pilot on-stop` processes.
+// KillLingering kills any running pilot hook processes.
 func KillLingering() error {
 	exec.Command("pkill", "-f", "pilot approve").Run()
+	exec.Command("pkill", "-f", "pilot interrogate").Run()
 	exec.Command("pkill", "-f", "pilot on-stop").Run()
 	return nil
 }

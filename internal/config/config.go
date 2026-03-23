@@ -87,13 +87,6 @@ func SSEBaseURL(cfg *PilotConfig) string {
 	return fmt.Sprintf("http://localhost:%d", port)
 }
 
-func EvaluatorURL(cfg *PilotConfig) string {
-	port := cfg.General.EvaluatorPort
-	if port == 0 {
-		port = 9722
-	}
-	return fmt.Sprintf("http://localhost:%d", port)
-}
 
 func PidFilePath() string {
 	return paths.PidFile()
