@@ -34,6 +34,9 @@ export function usePilotSSE(port: number, enabled: boolean) {
     es.addEventListener("connected", () => {
       setConnectionState("connected");
       retryRef.current = 0;
+      // Clear stale pending approvals — they live in server memory,
+      // so after a reconnect (or server restart) they're gone.
+      setPendingApprovals(new Map());
     });
 
     es.addEventListener("action", (e) => {
