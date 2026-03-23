@@ -415,6 +415,18 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Layer 3: Call Anthropic API directly
+	if s.ai == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"decision":   "deny",
+			"reason":     "anthropic API client not configured",
+			"tool_name":  req.ToolName,
+			"cwd":        req.Cwd,
+			"session_id": req.SessionID,
+		})
+		return
+	}
+
 	s.evalSem <- struct{}{}
 	defer func() { <-s.evalSem }()
 
@@ -549,6 +561,17 @@ func (s *Server) handleEvaluateIdle(w http.ResponseWriter, r *http.Request) {
 
 	cfg := config.Load()
 
+	if s.ai == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"should_respond": false,
+			"message":        "",
+			"confidence":     0,
+			"reasoning":      "anthropic API client not configured",
+		})
+		return
+	}
+
 	s.idleSem <- struct{}{}
 	defer func() { <-s.idleSem }()
 
@@ -638,6 +661,10 @@ If on track: {"should_respond": false, "message": "", "confidence": 0.9, "reason
 If seriously off track: {"should_respond": true, "message": "Stop — [what's wrong and what to do instead]", "confidence": 0.95, "reasoning": "..."}`
 
 	transcriptContext := summary + "\n\n## TOOL CALL CLAUDE IS ABOUT TO MAKE:\nTool: " + toolName + "\nInput: " + truncateForInterrogate(toolInput, 500)
+
+	if s.ai == nil {
+		return ""
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.evalTimeout)
 	defer cancel()

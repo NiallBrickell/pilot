@@ -42,10 +42,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Initialize Anthropic API client for evaluations
 	ai, err := anthropic.NewClient(srv.EvalTimeout(), paths.EnvFile())
 	if err != nil {
-		slog.Warn("Anthropic API client not available — evaluations will fail", "error", err)
-	} else {
-		srv.SetAI(ai)
+		return fmt.Errorf("anthropic API client: %w", err)
 	}
+	srv.SetAI(ai)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
