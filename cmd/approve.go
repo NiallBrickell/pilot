@@ -257,16 +257,18 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 	outcome := requestDashboardDecision(cfg, toolName, toolInput, result.Reason, result.Source, confidence, cfg.General.EscalationTimeoutS)
 	if outcome == "human_approved" || outcome == "approved" {
 		confidence = 1.0
-		reason := "approved (timeout)"
+		source := "timeout"
 		if outcome == "human_approved" {
-			reason = "approved from dashboard"
+			source = "dashboard"
 		}
+		detail := fmt.Sprintf("%s — %s [%s]", toolSummary(toolName, toolInput), result.Reason, source)
 		_ = state.RecordAction(state.PilotAction{
 			Timestamp:  now,
 			ActionType: state.AutoApprove,
-			Detail:     fmt.Sprintf("%s: %s", toolName, reason),
+			Detail:     detail,
 			Confidence: &confidence,
 		})
+		reason := fmt.Sprintf("approved (%s): %s", source, result.Reason)
 		return printJSON(hookResponse{
 			HookSpecificOutput: preToolUseOutput{
 				HookEventName:            "PreToolUse",
@@ -353,6 +355,38 @@ func requestDashboardDecision(cfg *config.PilotConfig, toolName, toolInput, reas
 		return "human_" + result.Outcome // "human_approved" or "human_rejected"
 	}
 	return result.Outcome
+}
+
+// toolSummary returns a short human-readable summary of the tool call.
+// e.g. "Bash: railway up -d ..." or "Edit: /path/to/file.go"
+func toolSummary(toolName, toolInput string) string {
+	if toolInput == "" {
+		return toolName
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(toolInput), &parsed); err == nil {
+		switch toolName {
+		case "Bash":
+			if cmd, ok := parsed["command"].(string); ok {
+				if len(cmd) > 80 {
+					cmd = cmd[:80] + "..."
+				}
+				return toolName + ": " + cmd
+			}
+		case "Edit", "Write", "NotebookEdit":
+			if fp, ok := parsed["file_path"].(string); ok {
+				return toolName + ": " + fp
+			}
+		case "WebFetch":
+			if url, ok := parsed["url"].(string); ok {
+				return toolName + ": " + url
+			}
+		}
+	}
+	if len(toolInput) > 80 {
+		return toolName + ": " + toolInput[:80] + "..."
+	}
+	return toolName + ": " + toolInput
 }
 
 func printJSON(v any) error {
