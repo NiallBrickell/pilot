@@ -255,20 +255,17 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 	// Send to dashboard for human decision.
 	confidence := 0.0
 	outcome := requestDashboardDecision(cfg, toolName, toolInput, result.Reason, result.Source, confidence, cfg.General.EscalationTimeoutS)
-	if outcome == "human_approved" || outcome == "approved" {
+	if outcome == "human_approved" {
+		// Human explicitly approved from dashboard
 		confidence = 1.0
-		source := "timeout"
-		if outcome == "human_approved" {
-			source = "dashboard"
-		}
-		detail := fmt.Sprintf("%s — %s [%s]", toolSummary(toolName, toolInput), result.Reason, source)
+		detail := fmt.Sprintf("%s — %s [dashboard]", toolSummary(toolName, toolInput), result.Reason)
 		_ = state.RecordAction(state.PilotAction{
 			Timestamp:  now,
 			ActionType: state.AutoApprove,
 			Detail:     detail,
 			Confidence: &confidence,
 		})
-		reason := fmt.Sprintf("approved (%s): %s", source, result.Reason)
+		reason := fmt.Sprintf("approved (dashboard): %s", result.Reason)
 		return printJSON(hookResponse{
 			HookSpecificOutput: preToolUseOutput{
 				HookEventName:            "PreToolUse",
@@ -278,11 +275,12 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 		})
 	}
 
-	// Timed out or rejected — fall through to Claude's normal prompt
+	// Timeout, rejected, or error — fall through to Claude's normal prompt
+	detail := fmt.Sprintf("%s — %s [%s]", toolSummary(toolName, toolInput), result.Reason, outcome)
 	_ = state.RecordAction(state.PilotAction{
 		Timestamp:  now,
 		ActionType: state.Escalate,
-		Detail:     fmt.Sprintf("%s: %s", toolName, result.Reason),
+		Detail:     detail,
 		Confidence: &confidence,
 	})
 
