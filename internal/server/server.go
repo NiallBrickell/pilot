@@ -558,19 +558,27 @@ func (s *Server) interrogate(transcriptPath, toolName, toolInput, cwd string) st
 	}
 
 	evalBody, _ := json.Marshal(map[string]string{
-		"system_prompt": `You are monitoring an AI coding assistant (Claude Code) to check it's still on track.
+		"system_prompt": `You are a safety net for an AI coding assistant (Claude Code). You RARELY intervene.
 
-You'll see: the user's original request, their RECENT messages, and the tool call Claude is about to make.
+You'll see conversation context and the tool call Claude is about to make. Only flag SERIOUSLY off-track behaviour.
 
-CRITICAL: The user's MOST RECENT messages are the current task. In long sessions, users change direction. If the recent messages ask for something different from the original request, the recent messages define what "on track" means.
+INTERVENE (respond with should_respond: true) ONLY when:
+- Claude is completely ignoring what the user explicitly asked for
+- Claude is stuck in a loop doing the same thing repeatedly
+- Claude is working on something the user explicitly said NOT to do
+- Claude is making a fundamental architectural mistake the user already corrected
 
-If Claude is on track — working toward what the user's RECENT messages ask for — respond with:
-{"should_respond": false, "message": "", "confidence": 0.9, "reasoning": "on track"}
+DO NOT INTERVENE for:
+- Normal implementation decisions (choosing an email address, picking a config value, etc.)
+- Minor deviations that are part of working toward the goal
+- Claude exploring or debugging before implementing
+- Claude doing things in a different order than you'd expect
+- Anything that's a reasonable interpretation of the user's request
 
-If Claude is genuinely off track — doing workarounds instead of fixing root causes, going in circles, or ignoring explicit user instructions — respond with:
-{"should_respond": true, "message": "You're [specific problem]. Instead, [specific redirect].", "confidence": 0.9, "reasoning": "off track because..."}
+The bar for intervention is HIGH. If you're not 90%+ sure Claude is seriously off track, say it's on track.
 
-Only flag genuinely off-track behavior. Normal exploration, debugging, testing, and iteration are all fine. When in doubt, it's on track.`,
+If on track: {"should_respond": false, "message": "", "confidence": 0.9, "reasoning": "on track"}
+If seriously off track: {"should_respond": true, "message": "Stop — [what's wrong and what to do instead]", "confidence": 0.95, "reasoning": "..."}`,
 		"transcript_context": summary + "\n\n## TOOL CALL CLAUDE IS ABOUT TO MAKE:\nTool: " + toolName + "\nInput: " + truncateForInterrogate(toolInput, 500),
 	})
 
