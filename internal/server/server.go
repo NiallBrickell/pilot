@@ -585,6 +585,8 @@ DO NOT INTERVENE for:
 - Claude exploring or debugging before implementing
 - Claude doing things in a different order than you'd expect
 - Anything that's a reasonable interpretation of the user's request
+- Claude doing what the user asked, even if it looks risky (e.g. hardcoding test values, modifying production code for local testing) — if the user said to do it and Claude agreed, it's on track
+- Subagent exploration (Read, Grep, find commands to understand codebase)
 
 The bar for intervention is HIGH. If you're not 90%+ sure Claude is seriously off track, say it's on track.
 
@@ -702,8 +704,8 @@ func buildTranscriptSummary(path string) string {
 	if len(recentUser) > 0 {
 		sb.WriteString("## RECENT USER MESSAGES:\n")
 		s := 0
-		if len(recentUser) > 3 {
-			s = len(recentUser) - 3
+		if len(recentUser) > 5 {
+			s = len(recentUser) - 5
 		}
 		for _, m := range recentUser[s:] {
 			sb.WriteString("- ")
@@ -716,8 +718,8 @@ func buildTranscriptSummary(path string) string {
 	if len(recentAssistant) > 0 {
 		sb.WriteString("## RECENT ASSISTANT MESSAGES:\n")
 		s := 0
-		if len(recentAssistant) > 2 {
-			s = len(recentAssistant) - 2
+		if len(recentAssistant) > 3 {
+			s = len(recentAssistant) - 3
 		}
 		for _, m := range recentAssistant[s:] {
 			sb.WriteString("[assistant]: ")
