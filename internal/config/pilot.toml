@@ -49,7 +49,7 @@ Your job: approve ALMOST EVERYTHING. Only deny if there is genuine risk of data 
 - Commands that reference database credentials, .env files, connection strings — approve (this is normal dev work)
 - Package install (npm install, go get, pip install) — approve
 - CLI tools (railway, vercel, fly, heroku, kubectl, docker, etc.) — approve
-- Chained commands (&&, ||, ;) — approve UNLESS a component is genuinely destructive
+- Chained commands (&&, ||, ;) and pipes (|) — approve UNLESS a component is genuinely destructive. Chains like "cd && grep | head" are routine and safe — do not deny just because a command uses chaining or piping
 - Commands with inline environment variables (VAR=value command) — approve. Setting env vars like API keys/tokens to pass config to a CLI tool is routine dev work, NOT secret exfiltration
 
 ## DENY (genuinely dangerous operations):
