@@ -45,6 +45,8 @@ type GeneralConfig struct {
 
 	// Interrogation settings
 	InterrogationConfidence float64 `toml:"interrogation_confidence"`
+	InterrogationModel      string  `toml:"interrogation_model"`
+	InterrogationEnabled    *bool   `toml:"interrogation_enabled"`
 
 	// Auto-approve all tool calls without evaluation (for autonomous/sandboxed use).
 	// Interrogation still runs on schedule.

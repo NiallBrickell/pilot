@@ -31,6 +31,8 @@ type Server struct {
 	evaluatorURL string
 	evalTimeout  time.Duration
 	interrogationConfidence float64
+	interrogationModel     string
+	interrogationEnabled   bool
 }
 
 // toolCounter tracks tool calls per session for checkpoint logic.
@@ -74,6 +76,14 @@ func New(cfg *config.PilotConfig) *Server {
 	if interrogationConf <= 0 {
 		interrogationConf = 0.7
 	}
+	interrogationModel := cfg.General.InterrogationModel
+	if interrogationModel == "" {
+		interrogationModel = "claude-sonnet-4-6"
+	}
+	interrogationEnabled := true
+	if cfg.General.InterrogationEnabled != nil {
+		interrogationEnabled = *cfg.General.InterrogationEnabled
+	}
 
 	broker := NewBroker()
 
@@ -90,6 +100,8 @@ func New(cfg *config.PilotConfig) *Server {
 		evaluatorURL:            config.EvaluatorURL(cfg),
 		evalTimeout:             evalTimeout,
 		interrogationConfidence: interrogationConf,
+		interrogationModel:     interrogationModel,
+		interrogationEnabled:   interrogationEnabled,
 	}
 }
 
@@ -361,7 +373,7 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 	slog.Debug("Evaluate request", "tool", req.ToolName, "cwd", req.Cwd, "session", req.SessionID)
 
 	// Check if this is an interrogation point
-	if req.SessionID != "" && req.TranscriptPath != "" {
+	if s.interrogationEnabled && req.SessionID != "" && req.TranscriptPath != "" {
 		raw, _ := s.toolCounts.LoadOrStore(req.SessionID, &toolCounter{})
 		tc := raw.(*toolCounter)
 		if tc.shouldInterrogate(req.UserMsgHash) {
@@ -593,6 +605,7 @@ The bar for intervention is HIGH. If you're not 90%+ sure Claude is seriously of
 If on track: {"should_respond": false, "message": "", "confidence": 0.9, "reasoning": "on track"}
 If seriously off track: {"should_respond": true, "message": "Stop — [what's wrong and what to do instead]", "confidence": 0.95, "reasoning": "..."}`,
 		"transcript_context": summary + "\n\n## TOOL CALL CLAUDE IS ABOUT TO MAKE:\nTool: " + toolName + "\nInput: " + truncateForInterrogate(toolInput, 500),
+		"model":              s.interrogationModel,
 	})
 
 	client := &http.Client{Timeout: s.evalTimeout}

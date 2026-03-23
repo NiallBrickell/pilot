@@ -84,9 +84,9 @@ function makeSem(max) {
 const approvalSem = makeSem(4);
 const idleSem = makeSem(2);
 
-async function evaluateApproval(systemPrompt, toolName, toolInput) {
+async function evaluateApproval(systemPrompt, toolName, toolInput, model) {
   const resp = await client.messages.create({
-    model: "claude-haiku-4-5",
+    model: model || "claude-haiku-4-5",
     max_tokens: 512,
     system: systemPrompt,
     messages: [{ role: "user", content: `Tool: ${toolName}\nInput: ${toolInput.slice(0, 2000)}` }],
@@ -96,9 +96,9 @@ async function evaluateApproval(systemPrompt, toolName, toolInput) {
   return JSON.parse(resp.content[0].text);
 }
 
-async function evaluateIdle(systemPrompt, transcriptContext) {
+async function evaluateIdle(systemPrompt, transcriptContext, model) {
   const resp = await client.messages.create({
-    model: "claude-haiku-4-5",
+    model: model || "claude-haiku-4-5",
     max_tokens: 512,
     system: systemPrompt,
     messages: [{
@@ -146,8 +146,8 @@ async function handleRequest(req, res) {
   await sem.acquire();
   try {
     const result = isApproval
-      ? await evaluateApproval(body.system_prompt, body.tool_name, body.tool_input)
-      : await evaluateIdle(body.system_prompt, body.transcript_context);
+      ? await evaluateApproval(body.system_prompt, body.tool_name, body.tool_input, body.model)
+      : await evaluateIdle(body.system_prompt, body.transcript_context, body.model);
 
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(result));
