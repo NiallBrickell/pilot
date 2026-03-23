@@ -45,6 +45,10 @@ type GeneralConfig struct {
 
 	// Interrogation settings
 	InterrogationConfidence float64 `toml:"interrogation_confidence"`
+
+	// Auto-approve all tool calls without evaluation (for autonomous/sandboxed use).
+	// Interrogation still runs on schedule.
+	AutoApproveAll bool `toml:"auto_approve_all"`
 }
 
 type PromptsConfig struct {

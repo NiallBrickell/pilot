@@ -378,8 +378,24 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Layer 1 + 2: Check Claude settings and pilot rules before hitting LLM
 	cfg := config.Load()
+
+	// Auto-approve mode: skip all approval evaluation (for autonomous/sandboxed use).
+	// Interrogation still ran above.
+	if cfg.General.AutoApproveAll {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"decision":   "approve",
+			"reason":     "auto_approve_all",
+			"source":     "config",
+			"tool_name":  req.ToolName,
+			"cwd":        req.Cwd,
+			"session_id": req.SessionID,
+		})
+		return
+	}
+
+	// Layer 1 + 2: Check Claude settings and pilot rules before hitting LLM
 	if decision := approve.Evaluate(cfg, req.ToolName, req.ToolInput, req.Cwd); decision != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
