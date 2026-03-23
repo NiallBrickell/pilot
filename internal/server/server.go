@@ -358,12 +358,16 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	slog.Debug("Evaluate request", "tool", req.ToolName, "cwd", req.Cwd, "session", req.SessionID)
+
 	// Check if this is an interrogation point
 	if req.SessionID != "" && req.TranscriptPath != "" {
 		raw, _ := s.toolCounts.LoadOrStore(req.SessionID, &toolCounter{})
 		tc := raw.(*toolCounter)
 		if tc.shouldInterrogate(req.UserMsgHash) {
+			slog.Info("Interrogating", "tool", req.ToolName, "session", req.SessionID)
 			if redirect := s.interrogate(req.TranscriptPath, req.ToolName, req.ToolInput, req.Cwd); redirect != "" {
+				slog.Info("Interrogation: redirecting", "tool", req.ToolName, "redirect", redirect[:min(len(redirect), 100)])
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(map[string]any{
 					"decision":   "deny",
@@ -554,8 +558,15 @@ func (s *Server) interrogate(transcriptPath, toolName, toolInput, cwd string) st
 	// Build conversation summary (reuse the same logic as on-stop)
 	summary := buildTranscriptSummary(transcriptPath)
 	if summary == "" {
-		return "" // Can't interrogate without context
+		slog.Debug("Interrogation skipped: no transcript context", "tool", toolName)
+		return ""
 	}
+
+	slog.Info("Interrogation context",
+		"tool", toolName,
+		"summary_len", len(summary),
+		"recent_user_preview", truncateForInterrogate(summary[max(0, len(summary)-500):], 500),
+	)
 
 	evalBody, _ := json.Marshal(map[string]string{
 		"system_prompt": `You are a safety net for an AI coding assistant (Claude Code). You RARELY intervene.
