@@ -652,28 +652,28 @@ func buildTranscriptSummary(path string) string {
 		}
 	}
 
-	// Last 100 lines for recent context
-	start := 0
-	if len(allLines) > 100 {
-		start = len(allLines) - 100
-	}
-
+	// Scan ALL lines (not just last 100) to find actual conversation turns.
+	// Filter by top-level "type" field — only "user" and "assistant" are real turns.
+	// Tool use, progress, and other entries are noise.
 	var recentUser, recentAssistant []string
-	for _, line := range allLines[start:] {
+	for _, line := range allLines {
 		var entry map[string]any
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		entryType, _ := entry["type"].(string)
+		if entryType != "user" && entryType != "assistant" {
 			continue
 		}
 		msg, _ := entry["message"].(map[string]any)
 		if msg == nil {
 			continue
 		}
-		role, _ := msg["role"].(string)
 		text := extractText(msg)
 		if text == "" {
 			continue
 		}
-		switch role {
+		switch entryType {
 		case "user":
 			recentUser = append(recentUser, text)
 		case "assistant":
