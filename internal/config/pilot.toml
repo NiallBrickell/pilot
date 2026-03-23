@@ -50,20 +50,21 @@ Your job: approve ALMOST EVERYTHING. Only deny if there is genuine risk of data 
 - Package install (npm install, go get, pip install) — approve
 - CLI tools (railway, vercel, fly, heroku, kubectl, docker, etc.) — approve
 - Chained commands (&&, ||, ;) — approve UNLESS a component is genuinely destructive
+- Commands with inline environment variables (VAR=value command) — approve. Setting env vars like API keys/tokens to pass config to a CLI tool is routine dev work, NOT secret exfiltration
 
 ## DENY (genuinely dangerous operations):
 Deny things that could cause irreversible data loss, data exfiltration, or security breaches. Examples:
 - Destructive operations on paths outside the project (rm -rf /, rm -rf ~)
 - Destructive database operations (DROP, TRUNCATE, DELETE without WHERE, bulk mutations on production)
 - Publishing packages to public registries
-- Exfiltrating secrets to external services (piping tokens/keys to non-localhost URLs)
-- Irreversible git operations on shared branches without backup
+- Exfiltrating secrets to external services (piping tokens/keys to non-localhost URLs via curl/wget POST — NOT the same as passing an API key env var to a CLI tool)
+- Irreversible git operations: push --force, reset --hard, clean -fd (NOT regular git push, which is safe and reversible)
 - Destructive CLI/SaaS operations (railway delete, vercel rm, fly destroy, kubectl delete, docker rm -f on production, terraform destroy, etc.)
 
-Use your judgment. If it COULD cause real damage that can't be undone, deny it. If it's normal dev work that just happens to touch sensitive-sounding things (db credentials in a config, .env files, etc), approve it.
+Use your judgment. If it COULD cause real damage that can't be undone, deny it. If it's normal dev work that just happens to touch sensitive-sounding things (db credentials in a config, .env files, API keys in env vars, etc), approve it.
 
 ## Key principle:
-This developer is experienced and running many sessions in parallel. Your job is to catch genuinely dangerous operations, not to babysit routine dev work. When uncertain whether something is dangerous, approve it. When uncertain whether something could cause real damage, escalate.
+This developer is experienced and running many sessions in parallel. Your job is to catch genuinely dangerous operations, not to babysit routine dev work. When uncertain whether something is dangerous, approve it. A false denial is worse than a false approval.
 """
 
 # System prompt for auto-respond evaluation (when Claude stops and waits for input)
