@@ -188,6 +188,26 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 
 	now := time.Now().UTC()
 
+	// Interrogation: immediate deny with redirect message, no escalation
+	if result.Source == "interrogate" {
+		confidence := 0.0
+		detail := fmt.Sprintf("%s — REDIRECTED: %s", toolSummary(toolName, toolInput), result.Reason)
+		_ = state.RecordAction(state.PilotAction{
+			Timestamp:  now,
+			ActionType: state.Escalate,
+			Detail:     detail,
+			Confidence: &confidence,
+		})
+		emitActionToSSE(cfg, now, "interrogate", detail, &confidence, toolName, toolInput, cwd, sessionID)
+		return printJSON(hookResponse{
+			HookSpecificOutput: preToolUseOutput{
+				HookEventName:            "PreToolUse",
+				PermissionDecision:       "ask",
+				PermissionDecisionReason: &result.Reason,
+			},
+		})
+	}
+
 	if result.Decision == "approve" {
 		confidence := 1.0
 
