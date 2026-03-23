@@ -255,10 +255,12 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 	// Send to dashboard for human decision.
 	confidence := 0.0
 	outcome := requestDashboardDecision(cfg, toolName, toolInput, result.Reason, result.Source, confidence, cfg.General.EscalationTimeoutS)
-	if outcome == "approved" {
-		// Human approved from dashboard
+	if outcome == "human_approved" || outcome == "approved" {
 		confidence = 1.0
-		reason := "approved from dashboard"
+		reason := "approved (timeout)"
+		if outcome == "human_approved" {
+			reason = "approved from dashboard"
+		}
 		_ = state.RecordAction(state.PilotAction{
 			Timestamp:  now,
 			ActionType: state.AutoApprove,
@@ -335,16 +337,20 @@ func requestDashboardDecision(cfg *config.PilotConfig, toolName, toolInput, reas
 
 	resp, err := client.Post(config.SSEBaseURL(cfg)+"/internal/pending", "application/json", bytes.NewReader(body))
 	if err != nil {
-		slog.Debug("SSE server not reachable for grace period, auto-approving", "error", err)
-		return "approved"
+		slog.Debug("SSE server not reachable for pending decision", "error", err)
+		return "timeout"
 	}
 	defer resp.Body.Close()
 
 	var result struct {
-		Outcome string `json:"outcome"`
+		Outcome    string `json:"outcome"`
+		ResolvedBy string `json:"resolved_by"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "approved"
+		return "timeout"
+	}
+	if result.ResolvedBy == "human" {
+		return "human_" + result.Outcome // "human_approved" or "human_rejected"
 	}
 	return result.Outcome
 }
