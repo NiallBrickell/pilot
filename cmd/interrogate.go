@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/NiallBrickell/pilot/internal/auth"
@@ -73,36 +72,11 @@ func runInterrogate(cmd *cobra.Command, args []string) error {
 	sessionID, _ := toolInfo["session_id"].(string)
 	transcriptPath, _ := toolInfo["transcript_path"].(string)
 
-	// Hash of last user message text to detect new user turns
+	// Hash of last user message text to detect new user turns.
+	// Only read the tail of the transcript to avoid loading huge files into memory.
 	var userMsgHash string
 	if transcriptPath != "" {
-		if data, err := os.ReadFile(transcriptPath); err == nil {
-			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-			for i := len(lines) - 1; i >= 0; i-- {
-				var entry map[string]any
-				if json.Unmarshal([]byte(lines[i]), &entry) != nil {
-					continue
-				}
-				if msg, ok := entry["message"].(map[string]any); ok {
-					if role, _ := msg["role"].(string); role == "user" {
-						switch content := msg["content"].(type) {
-						case string:
-							userMsgHash = content[:min(len(content), 200)]
-						case []any:
-							for _, item := range content {
-								if m, ok := item.(map[string]any); ok {
-									if t, ok := m["text"].(string); ok {
-										userMsgHash = t[:min(len(t), 200)]
-										break
-									}
-								}
-							}
-						}
-						break
-					}
-				}
-			}
-		}
+		userMsgHash = lastUserMsgHash(transcriptPath)
 	}
 
 	cfg := config.Load()

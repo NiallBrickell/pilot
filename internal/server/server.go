@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -39,7 +40,8 @@ type Server struct {
 type toolCounter struct {
 	mu              sync.Mutex
 	countSinceUser  int
-	lastUserMsgHash string // detect new user messages
+	lastUserMsgHash string    // detect new user messages
+	lastSeen        time.Time // for stale entry cleanup
 }
 
 // shouldInterrogate returns true if this tool call should include a
@@ -49,6 +51,7 @@ func (tc *toolCounter) shouldInterrogate(userMsgHash string) bool {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
+	tc.lastSeen = time.Now()
 	if userMsgHash != tc.lastUserMsgHash {
 		tc.countSinceUser = 0
 		tc.lastUserMsgHash = userMsgHash
@@ -139,6 +142,25 @@ func (s *Server) Start() error {
 		Addr:    fmt.Sprintf(":%d", s.port),
 		Handler: corsMiddleware(mux),
 	}
+
+	// Periodically evict stale toolCounts entries (sessions inactive >1h)
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			cutoff := time.Now().Add(-1 * time.Hour)
+			s.toolCounts.Range(func(key, value any) bool {
+				tc := value.(*toolCounter)
+				tc.mu.Lock()
+				stale := tc.lastSeen.Before(cutoff)
+				tc.mu.Unlock()
+				if stale {
+					s.toolCounts.Delete(key)
+				}
+				return true
+			})
+		}
+	}()
 
 	slog.Info("SSE server starting", "port", s.port)
 	if err := s.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -699,56 +721,86 @@ If seriously off track: {"should_respond": true, "message": "Stop — [what's wr
 	return ""
 }
 
-// buildTranscriptSummary is a simplified version for interrogation context.
+// transcriptReadLimit caps how much of the transcript file we read into memory.
+// The head (first user message) and tail (recent turns) are read separately
+// so we never load the entire file — transcripts can grow to hundreds of MB
+// and loading them fully caused catastrophic memory usage (200GB+) when
+// multiple concurrent interrogation requests were in flight.
+const transcriptReadLimit = 256 * 1024 // 256KB per read
+
+// buildTranscriptSummary reads the head and tail of a transcript file to
+// extract the first user message and recent conversation turns.
 func buildTranscriptSummary(path string) string {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
+	defer f.Close()
 
-	allLines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	fi, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	size := fi.Size()
 
-	// First user message
+	// --- Head: read first 256KB to find the original user request ---
+	headLen := min(int64(transcriptReadLimit), size)
+	headBuf := make([]byte, headLen)
+	if _, err := f.ReadAt(headBuf, 0); err != nil && err != io.EOF {
+		return ""
+	}
+
 	var firstUser string
-	for _, line := range allLines[:min(len(allLines), 50)] {
+	linesScanned := 0
+	forEachLine(headBuf, func(line []byte) bool {
+		linesScanned++
+		if linesScanned > 50 {
+			return false
+		}
 		var entry map[string]any
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
+		if json.Unmarshal(line, &entry) != nil {
+			return true
 		}
 		msg, _ := entry["message"].(map[string]any)
 		if msg == nil {
-			continue
+			return true
 		}
-		role, _ := msg["role"].(string)
-		if role != "user" {
-			continue
+		if role, _ := msg["role"].(string); role == "user" {
+			firstUser = extractText(msg)
+			return firstUser == "" // stop if found
 		}
-		firstUser = extractText(msg)
-		if firstUser != "" {
-			break
-		}
+		return true
+	})
+
+	// --- Tail: read last 256KB for recent conversation turns ---
+	tailOffset := int64(0)
+	tailLen := size
+	if size > transcriptReadLimit {
+		tailOffset = size - transcriptReadLimit
+		tailLen = transcriptReadLimit
+	}
+	tailBuf := make([]byte, tailLen)
+	if _, err := f.ReadAt(tailBuf, tailOffset); err != nil && err != io.EOF {
+		return ""
 	}
 
-	// Scan ALL lines (not just last 100) to find actual conversation turns.
-	// Filter by top-level "type" field — only "user" and "assistant" are real turns.
-	// Tool use, progress, and other entries are noise.
 	var recentUser, recentAssistant []string
-	for _, line := range allLines {
+	forEachLine(tailBuf, func(line []byte) bool {
 		var entry map[string]any
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
+		if json.Unmarshal(line, &entry) != nil {
+			return true
 		}
 		entryType, _ := entry["type"].(string)
 		if entryType != "user" && entryType != "assistant" {
-			continue
+			return true
 		}
 		msg, _ := entry["message"].(map[string]any)
 		if msg == nil {
-			continue
+			return true
 		}
 		text := extractText(msg)
 		if text == "" {
-			continue
+			return true
 		}
 		switch entryType {
 		case "user":
@@ -756,7 +808,8 @@ func buildTranscriptSummary(path string) string {
 		case "assistant":
 			recentAssistant = append(recentAssistant, text)
 		}
-	}
+		return true
+	})
 
 	var sb strings.Builder
 	if firstUser != "" {
@@ -793,6 +846,25 @@ func buildTranscriptSummary(path string) string {
 	}
 
 	return sb.String()
+}
+
+// forEachLine calls fn for each newline-delimited segment in data.
+// fn returns false to stop iteration.
+func forEachLine(data []byte, fn func(line []byte) bool) {
+	start := 0
+	for i, b := range data {
+		if b == '\n' {
+			if i > start {
+				if !fn(data[start:i]) {
+					return
+				}
+			}
+			start = i + 1
+		}
+	}
+	if start < len(data) {
+		fn(data[start:])
+	}
 }
 
 func extractText(msg map[string]any) string {
