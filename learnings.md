@@ -38,9 +38,12 @@ Settings files from most local to most global. Each file checked independently �
 
 Within each file: deny > ask > allow. `defaultMode: "acceptEdits"` auto-approves Write/Edit/NotebookEdit.
 
-### Hook matcher matters
+### Hook matchers
 
-`"matcher": ".*"` fires on EVERY tool call including Read, Glob, Grep — spawning a process each time. Changed to `"^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch)$"` to only fire on tools that might actually need approval.
+Each hook invocation = one OS process spawn + one HTTP roundtrip to serve. Two PreToolUse hooks (approve + interrogate) means 2 processes per matched tool call.
+
+- **approve**: `"^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch|Read|Grep|Glob|Agent)$"` — Read/Grep/Glob must be included because pilot auto-approves them (Layer 2), saving the user from Claude's default permission prompts.
+- **interrogate**: `".*"` — fires on every tool call. Server-side cadence logic (1st, 5th, every 25th per user turn) short-circuits most calls immediately. Keeping the broad matcher preserves full visibility into off-track behaviour.
 
 ## The MBP incident
 
