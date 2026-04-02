@@ -1,4 +1,4 @@
-name: Release Dashboard
+name: Release
 
 on:
   push:
@@ -7,6 +7,48 @@ on:
   workflow_dispatch:
 
 jobs:
+  build-cli:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            artifact: pilot-darwin-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            artifact: pilot-darwin-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            artifact: pilot-linux-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            artifact: pilot-linux-arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build CLI
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -o ${{ matrix.artifact }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
   build-dashboard:
     strategy:
       matrix:
@@ -64,7 +106,7 @@ jobs:
           path: dashboard/build/bin/${{ matrix.artifact }}
 
   release:
-    needs: build-dashboard
+    needs: [build-cli, build-dashboard]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
@@ -78,6 +120,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            pilot-darwin-arm64/pilot-darwin-arm64
+            pilot-darwin-amd64/pilot-darwin-amd64
+            pilot-linux-amd64/pilot-linux-amd64
+            pilot-linux-arm64/pilot-linux-arm64
             pilot-dashboard-macos.zip/pilot-dashboard-macos.zip
             pilot-dashboard-linux-amd64.tar.gz/pilot-dashboard-linux-amd64.tar.gz
           generate_release_notes: true

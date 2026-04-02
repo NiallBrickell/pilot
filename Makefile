@@ -2,7 +2,6 @@
 
 build:
 	go build -o pilot .
-	npm install --production
 
 start: build
 	./pilot start
@@ -16,7 +15,7 @@ dev:
 clean:
 	rm -f pilot
 
-dashboard:
+dashboard: build
 	cd dashboard && wails dev
 
 dashboard-build:
