@@ -1,6 +1,9 @@
 // Layer 1: Claude Code settings interpreter.
 // Reads the user's actual Claude Code settings files and evaluates whether
 // a tool call would be auto-approved by Claude's own permission system.
+//
+// Settings files are cached with a short TTL to avoid re-reading 10+ files
+// from disk on every tool call.
 package approve
 
 import (
@@ -8,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 // claudeSettings mirrors Claude Code's settings.json / settings.local.json
@@ -27,22 +32,35 @@ var builtinAutoApproved = map[string]bool{
 	"TaskCreate": true, "TaskUpdate": true,
 }
 
-// CheckClaudeSettings evaluates the tool call against Claude Code's settings
-// hierarchy. Walks from cwd upward, checking each settings file in order.
-// First match wins — a local deny can't be overridden by a parent allow.
-// Returns "allow", "deny", or "" (no match in any settings file).
-func CheckClaudeSettings(toolName, toolInput, cwd string) string {
-	if builtinAutoApproved[toolName] {
-		return "allow"
-	}
+// settingsCache caches parsed settings per cwd with a short TTL.
+var settingsCache struct {
+	mu      sync.RWMutex
+	entries map[string]*cachedSettings
+}
 
-	if cwd == "" {
-		cwd, _ = os.Getwd()
-	}
+type cachedSettings struct {
+	files   []claudeSettings
+	loadedAt time.Time
+}
 
-	// Collect settings files from most local to most global.
-	// At each directory, check settings.local.json first (highest priority),
-	// then settings.json (project-level, committed).
+const settingsCacheTTL = 60 * time.Second
+
+func init() {
+	settingsCache.entries = make(map[string]*cachedSettings)
+}
+
+// loadSettingsForCwd returns the ordered list of settings files for a cwd,
+// using a cache to avoid repeated filesystem walks.
+func loadSettingsForCwd(cwd string) []claudeSettings {
+	settingsCache.mu.RLock()
+	if entry, ok := settingsCache.entries[cwd]; ok && time.Since(entry.loadedAt) < settingsCacheTTL {
+		files := entry.files
+		settingsCache.mu.RUnlock()
+		return files
+	}
+	settingsCache.mu.RUnlock()
+
+	// Cache miss — walk the filesystem
 	var files []claudeSettings
 
 	for dir := cwd; dir != ""; {
@@ -65,11 +83,37 @@ func CheckClaudeSettings(toolName, toolInput, cwd string) string {
 	home, err := os.UserHomeDir()
 	if err == nil {
 		global := loadSettingsFile(filepath.Join(home, ".claude", "settings.json"))
-		files = append(files, global)
+		if len(global.Permissions.Allow) > 0 || len(global.Permissions.Deny) > 0 ||
+			len(global.Permissions.Ask) > 0 || global.Permissions.DefaultMode != "" {
+			files = append(files, global)
+		}
 	}
 
+	settingsCache.mu.Lock()
+	settingsCache.entries[cwd] = &cachedSettings{files: files, loadedAt: time.Now()}
+	settingsCache.mu.Unlock()
+
+	return files
+}
+
+// CheckClaudeSettings evaluates the tool call against Claude Code's settings
+// hierarchy. Walks from cwd upward, checking each settings file in order.
+// First match wins — a local deny can't be overridden by a parent allow.
+// Returns "allow", "deny", or "" (no match in any settings file).
+// parsed is the pre-parsed toolInput JSON (nil if not JSON).
+func CheckClaudeSettings(toolName string, parsed map[string]any, toolInput, cwd string) string {
+	if builtinAutoApproved[toolName] {
+		return "allow"
+	}
+
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+
+	files := loadSettingsForCwd(cwd)
+
 	// Evaluate each file in order — first match wins
-	toolSig := buildSignature(toolName, toolInput)
+	toolSig := buildSignature(toolName, parsed, toolInput)
 	for _, s := range files {
 		result := evaluateAgainstSettings(s, toolName, toolSig)
 		if result != "" {
@@ -123,27 +167,21 @@ func loadSettingsFile(path string) claudeSettings {
 	return s
 }
 
-func buildSignature(toolName, toolInput string) string {
+// buildSignature constructs the permission signature from pre-parsed JSON.
+func buildSignature(toolName string, parsed map[string]any, toolInput string) string {
 	if toolInput == "" {
 		return toolName
 	}
 
-	// Claude Code sends tool input as JSON. Extract the relevant field
-	// to match against permission patterns like "Bash(git status:*)".
-	extracted := extractKeyField(toolName, toolInput)
+	extracted := extractKeyField(toolName, parsed, toolInput)
 	return toolName + "(" + strings.TrimSpace(extracted) + ")"
 }
 
-// extractKeyField pulls the permission-relevant field from JSON tool input.
+// extractKeyField pulls the permission-relevant field from pre-parsed JSON tool input.
 // For Bash: "command" field. For Edit/Write: "file_path" field.
-// Falls back to raw input if not JSON or field not found.
-func extractKeyField(toolName, toolInput string) string {
-	if len(toolInput) == 0 || toolInput[0] != '{' {
-		return toolInput // Not JSON, use as-is
-	}
-
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(toolInput), &parsed); err != nil {
+// Falls back to raw input if parsed is nil.
+func extractKeyField(toolName string, parsed map[string]any, toolInput string) string {
+	if parsed == nil {
 		return toolInput
 	}
 

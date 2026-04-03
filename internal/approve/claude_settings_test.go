@@ -1,10 +1,19 @@
 package approve
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func parseTool(input string) map[string]any {
+	var parsed map[string]any
+	if len(input) > 0 && input[0] == '{' {
+		_ = json.Unmarshal([]byte(input), &parsed)
+	}
+	return parsed
+}
 
 func TestBuildSignature(t *testing.T) {
 	tests := []struct {
@@ -23,7 +32,7 @@ func TestBuildSignature(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildSignature(tt.toolName, tt.toolInput)
+			got := buildSignature(tt.toolName, parseTool(tt.toolInput), tt.toolInput)
 			if got != tt.want {
 				t.Errorf("buildSignature(%q, %q) = %q, want %q", tt.toolName, tt.toolInput, got, tt.want)
 			}
@@ -74,7 +83,7 @@ func TestCheckClaudeSettings(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := CheckClaudeSettings(tt.toolName, tt.toolInput, tt.cwd)
+			got := CheckClaudeSettings(tt.toolName, parseTool(tt.toolInput), tt.toolInput, tt.cwd)
 			if got != tt.want {
 				t.Errorf("CheckClaudeSettings(%q, %q, %q) = %q, want %q", tt.toolName, tt.toolInput, tt.cwd, got, tt.want)
 			}

@@ -37,6 +37,7 @@ func init() {
 }
 
 func runApprove(cmd *cobra.Command, args []string) error {
+	cliStart := time.Now()
 	paths.EnsureSetup(config.EmbeddedConfig())
 	if !auth.IsClaudeAuthed() {
 		reason := "pilot: claude not authenticated, skipping"
@@ -108,14 +109,15 @@ func runApprove(cmd *cobra.Command, args []string) error {
 		})
 	}
 
-	return handleEvalResult(cfg, result, toolName, toolInput, sessionCwd, sessionID)
+	return handleEvalResult(cfg, result, toolName, toolInput, sessionCwd, sessionID, cliStart)
 }
 
 type evalResult struct {
 	Decision   string  `json:"decision"`
 	Reason     string  `json:"reason"`
 	Confidence float64 `json:"confidence"`
-	Source     string  `json:"source"` // "settings", "pilot", "haiku", "interrogate"
+	Source     string  `json:"source"`     // "settings", "pilot", "haiku", "interrogate"
+	DurationMs float64 `json:"duration_ms"` // server-side eval time
 }
 
 // evaluateViaServer calls the pilot serve process to evaluate.
@@ -145,10 +147,13 @@ func evaluateViaServer(cfg *config.PilotConfig, toolName, toolInput, cwd, sessio
 }
 
 // handleEvalResult converts a server evaluation result into the hook response.
-func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, toolInput, cwd, sessionID string) error {
+func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, toolInput, cwd, sessionID string, cliStart time.Time) error {
+	roundTripMs := float64(time.Since(cliStart).Microseconds()) / 1000.0
+
 	if result.Decision == "passthrough" {
 		// Emit a "settings passthrough" event so dashboard can show it
 		emitActionToSSE(cfg, time.Now().UTC(), "passthrough", fmt.Sprintf("%s: %s", toolName, result.Reason), nil, toolName, toolInput, cwd, sessionID)
+		slog.Debug("Approve complete", "tool", toolName, "decision", "passthrough", "source", result.Source, "server_ms", result.DurationMs, "roundtrip_ms", roundTripMs)
 		reason := "pilot: auto-approved by settings"
 		return printJSON(hookResponse{
 			HookSpecificOutput: preToolUseOutput{
@@ -163,7 +168,7 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 
 	// Evaluator down or other infrastructure issue — fall through to user
 	if result.Decision == "ask" {
-		slog.Warn("Pilot infrastructure issue, falling through to user", "reason", result.Reason)
+		slog.Warn("Pilot infrastructure issue, falling through to user", "reason", result.Reason, "roundtrip_ms", roundTripMs)
 		return printJSON(hookResponse{
 			HookSpecificOutput: preToolUseOutput{
 				HookEventName:            "PreToolUse",
@@ -186,6 +191,8 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 					ActionType: state.Escalate,
 					Detail:     fmt.Sprintf("%s: rejected by human during grace period", toolName),
 					Confidence: &confidence,
+					DurationMs: &roundTripMs,
+					Source:     result.Source,
 				})
 				return printJSON(hookResponse{
 					HookSpecificOutput: preToolUseOutput{
@@ -197,11 +204,15 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 			}
 		}
 
+		slog.Debug("Approve complete", "tool", toolName, "decision", "approve", "source", result.Source, "server_ms", result.DurationMs, "roundtrip_ms", roundTripMs)
+
 		_ = state.RecordAction(state.PilotAction{
 			Timestamp:  now,
 			ActionType: state.AutoApprove,
 			Detail:     fmt.Sprintf("%s: %s", toolName, result.Reason),
 			Confidence: &confidence,
+			DurationMs: &roundTripMs,
+			Source:     result.Source,
 		})
 
 		return printJSON(hookResponse{
@@ -226,6 +237,8 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 			ActionType: state.AutoApprove,
 			Detail:     detail,
 			Confidence: &confidence,
+			DurationMs: &roundTripMs,
+			Source:     result.Source,
 		})
 		reason := fmt.Sprintf("approved (dashboard): %s", result.Reason)
 		return printJSON(hookResponse{
@@ -244,6 +257,8 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 		ActionType: state.Escalate,
 		Detail:     detail,
 		Confidence: &confidence,
+		DurationMs: &roundTripMs,
+		Source:     result.Source,
 	})
 
 	return printJSON(hookResponse{

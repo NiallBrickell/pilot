@@ -45,6 +45,8 @@ type PilotAction struct {
 	ActionType ActionType `json:"action_type"`
 	Detail     string     `json:"detail"`
 	Confidence *float64   `json:"confidence"`
+	DurationMs *float64   `json:"duration_ms,omitempty"`
+	Source     string     `json:"source,omitempty"`
 	ToolName   string     `json:"tool_name,omitempty"`
 	ToolInput  string     `json:"tool_input,omitempty"`
 	Cwd        string     `json:"cwd,omitempty"`
@@ -77,6 +79,8 @@ func getDB() *sql.DB {
 			action_type TEXT NOT NULL,
 			detail TEXT NOT NULL,
 			confidence REAL,
+			duration_ms REAL,
+			source TEXT,
 			tool_name TEXT,
 			tool_input TEXT,
 			cwd TEXT,
@@ -108,6 +112,10 @@ func getDB() *sql.DB {
 			db.Exec(`INSERT OR IGNORE INTO stats (key, value) VALUES (?, 0)`, key)
 		}
 
+		// Migrations: add columns that may not exist in older databases.
+		db.Exec(`ALTER TABLE actions ADD COLUMN duration_ms REAL`)
+		db.Exec(`ALTER TABLE actions ADD COLUMN source TEXT`)
+
 		// Index for recent queries
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_actions_timestamp ON actions (timestamp DESC)`)
 	})
@@ -123,12 +131,14 @@ func RecordAction(action PilotAction) error {
 	}
 
 	_, err := db.Exec(
-		`INSERT INTO actions (timestamp, action_type, detail, confidence, tool_name, tool_input, cwd, session_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO actions (timestamp, action_type, detail, confidence, duration_ms, source, tool_name, tool_input, cwd, session_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		action.Timestamp.Format(time.RFC3339Nano),
 		string(action.ActionType),
 		action.Detail,
 		confidence,
+		action.DurationMs,
+		action.Source,
 		action.ToolName,
 		action.ToolInput,
 		action.Cwd,
@@ -186,15 +196,15 @@ func ReadState() (PilotState, error) {
 
 	// Recent actions (last 200)
 	actionRows, err := db.Query(
-		`SELECT timestamp, action_type, detail, confidence, tool_name, tool_input, cwd, session_id
+		`SELECT timestamp, action_type, detail, confidence, duration_ms, source, tool_name, tool_input, cwd, session_id
 		 FROM actions ORDER BY id DESC LIMIT 200`)
 	if err == nil {
 		defer actionRows.Close()
 		for actionRows.Next() {
 			var ts, actionType, detail string
-			var confidence *float64
-			var toolName, toolInput, cwd, sessionID *string
-			actionRows.Scan(&ts, &actionType, &detail, &confidence, &toolName, &toolInput, &cwd, &sessionID)
+			var confidence, durationMs *float64
+			var source, toolName, toolInput, cwd, sessionID *string
+			actionRows.Scan(&ts, &actionType, &detail, &confidence, &durationMs, &source, &toolName, &toolInput, &cwd, &sessionID)
 
 			t, _ := time.Parse(time.RFC3339Nano, ts)
 			action := PilotAction{
@@ -202,6 +212,10 @@ func ReadState() (PilotState, error) {
 				ActionType: ActionType(actionType),
 				Detail:     detail,
 				Confidence: confidence,
+				DurationMs: durationMs,
+			}
+			if source != nil {
+				action.Source = *source
 			}
 			if toolName != nil {
 				action.ToolName = *toolName
@@ -257,6 +271,133 @@ func WriteState(s *PilotState) error {
 	}
 
 	return nil
+}
+
+// ProfileStats holds aggregated evaluation timing data.
+type ProfileStats struct {
+	Source string  `json:"source"`
+	Count  int     `json:"count"`
+	AvgMs  float64 `json:"avg_ms"`
+	P50Ms  float64 `json:"p50_ms"`
+	P95Ms  float64 `json:"p95_ms"`
+	P99Ms  float64 `json:"p99_ms"`
+	MinMs  float64 `json:"min_ms"`
+	MaxMs  float64 `json:"max_ms"`
+}
+
+// ReadProfile returns evaluation timing stats grouped by source.
+func ReadProfile(limit int) []ProfileStats {
+	db := getDB()
+	if limit <= 0 {
+		limit = 1000
+	}
+
+	rows, err := db.Query(`
+		SELECT source,
+			COUNT(*) as cnt,
+			AVG(duration_ms) as avg_ms,
+			MIN(duration_ms) as min_ms,
+			MAX(duration_ms) as max_ms
+		FROM actions
+		WHERE duration_ms IS NOT NULL AND source IS NOT NULL AND source != ''
+		GROUP BY source
+		ORDER BY cnt DESC
+	`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var stats []ProfileStats
+	for rows.Next() {
+		var s ProfileStats
+		rows.Scan(&s.Source, &s.Count, &s.AvgMs, &s.MinMs, &s.MaxMs)
+		stats = append(stats, s)
+	}
+
+	// Compute percentiles per source from raw data
+	for i, s := range stats {
+		pRows, err := db.Query(`
+			SELECT duration_ms FROM actions
+			WHERE duration_ms IS NOT NULL AND source = ?
+			ORDER BY duration_ms ASC
+			LIMIT ?
+		`, s.Source, limit)
+		if err != nil {
+			continue
+		}
+		var durations []float64
+		for pRows.Next() {
+			var d float64
+			pRows.Scan(&d)
+			durations = append(durations, d)
+		}
+		pRows.Close()
+
+		if len(durations) > 0 {
+			stats[i].P50Ms = percentile(durations, 50)
+			stats[i].P95Ms = percentile(durations, 95)
+			stats[i].P99Ms = percentile(durations, 99)
+		}
+	}
+
+	return stats
+}
+
+// ReadProfileAll returns overall timing stats (not grouped by source).
+func ReadProfileAll(limit int) *ProfileStats {
+	db := getDB()
+	if limit <= 0 {
+		limit = 1000
+	}
+
+	var s ProfileStats
+	s.Source = "all"
+	err := db.QueryRow(`
+		SELECT COUNT(*), COALESCE(AVG(duration_ms), 0), COALESCE(MIN(duration_ms), 0), COALESCE(MAX(duration_ms), 0)
+		FROM actions WHERE duration_ms IS NOT NULL
+	`).Scan(&s.Count, &s.AvgMs, &s.MinMs, &s.MaxMs)
+	if err != nil || s.Count == 0 {
+		return nil
+	}
+
+	pRows, err := db.Query(`
+		SELECT duration_ms FROM actions
+		WHERE duration_ms IS NOT NULL
+		ORDER BY duration_ms ASC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return &s
+	}
+	defer pRows.Close()
+
+	var durations []float64
+	for pRows.Next() {
+		var d float64
+		pRows.Scan(&d)
+		durations = append(durations, d)
+	}
+	if len(durations) > 0 {
+		s.P50Ms = percentile(durations, 50)
+		s.P95Ms = percentile(durations, 95)
+		s.P99Ms = percentile(durations, 99)
+	}
+
+	return &s
+}
+
+func percentile(sorted []float64, p int) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := float64(p) / 100.0 * float64(len(sorted)-1)
+	lower := int(idx)
+	if lower >= len(sorted)-1 {
+		return sorted[len(sorted)-1]
+	}
+	frac := idx - float64(lower)
+	return sorted[lower]*(1-frac) + sorted[lower+1]*frac
 }
 
 // LogEntry represents a debug log line.

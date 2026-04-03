@@ -3,7 +3,6 @@
 package approve
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"strings"
 
@@ -16,15 +15,16 @@ var readOnlyTools = map[string]bool{
 }
 
 // CheckPilotRules evaluates against pilot's own rule set.
+// parsed is the pre-parsed toolInput JSON (nil if not JSON).
 // Returns "approve", "deny", or "" (no match, fall through to LLM).
-func CheckPilotRules(cfg *config.PilotConfig, toolName, toolInput, cwd string) string {
+func CheckPilotRules(cfg *config.PilotConfig, toolName string, parsed map[string]any, cwd string) string {
 	if !readOnlyTools[toolName] {
 		return "" // Not a read-only tool — fall through
 	}
 
 	// Auto-approve read-only tools that target the working directory.
 	// Out-of-cwd reads fall through to LLM evaluation.
-	target := extractReadTarget(toolName, toolInput)
+	target := extractReadTarget(toolName, parsed)
 	if target == "" {
 		return "approve" // No path to check (e.g. Grep with no explicit path) — approve
 	}
@@ -45,13 +45,9 @@ func CheckPilotRules(cfg *config.PilotConfig, toolName, toolInput, cwd string) s
 	return ""
 }
 
-// extractReadTarget pulls the file/directory path from a read-only tool's input.
-func extractReadTarget(toolName, toolInput string) string {
-	if toolInput == "" || toolInput[0] != '{' {
-		return ""
-	}
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(toolInput), &parsed); err != nil {
+// extractReadTarget pulls the file/directory path from pre-parsed read-only tool input.
+func extractReadTarget(toolName string, parsed map[string]any) string {
+	if parsed == nil {
 		return ""
 	}
 

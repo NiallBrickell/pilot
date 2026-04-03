@@ -137,6 +137,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/hooks/uninstall", s.handleHooksUninstall)
 	mux.HandleFunc("/config", s.handleGetConfig)
 	mux.HandleFunc("/logs", s.handleLogs)
+	mux.HandleFunc("/internal/profile", s.handleProfile)
 
 	s.srv = &http.Server{
 		Addr:    fmt.Sprintf(":%d", s.port),
@@ -405,46 +406,55 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 
 	slog.Debug("Evaluate request", "tool", req.ToolName, "cwd", req.Cwd, "session", req.SessionID)
 
+	evalStart := time.Now()
+
 	cfg := config.Load()
 
 	// Auto-approve mode: skip all approval evaluation (for autonomous/sandboxed use).
 	// Interrogation still ran above.
 	if cfg.General.AutoApproveAll {
+		durationMs := float64(time.Since(evalStart).Microseconds()) / 1000.0
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"decision":   "approve",
-			"reason":     "auto_approve_all",
-			"source":     "config",
-			"tool_name":  req.ToolName,
-			"cwd":        req.Cwd,
-			"session_id": req.SessionID,
+			"decision":    "approve",
+			"reason":      "auto_approve_all",
+			"source":      "config",
+			"duration_ms": durationMs,
+			"tool_name":   req.ToolName,
+			"cwd":         req.Cwd,
+			"session_id":  req.SessionID,
 		})
 		return
 	}
 
 	// Layer 1 + 2: Check Claude settings and pilot rules before hitting LLM
 	if decision := approve.Evaluate(cfg, req.ToolName, req.ToolInput, req.Cwd); decision != nil {
+		durationMs := float64(time.Since(evalStart).Microseconds()) / 1000.0
+		slog.Debug("Evaluate completed (local)", "tool", req.ToolName, "source", decision.Source, "duration_ms", durationMs)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"decision":   decision.Action,
-			"reason":     decision.Reason,
-			"source":     decision.Source,
-			"tool_name":  req.ToolName,
-			"cwd":        req.Cwd,
-			"session_id": req.SessionID,
+			"decision":    decision.Action,
+			"reason":      decision.Reason,
+			"source":      decision.Source,
+			"duration_ms": durationMs,
+			"tool_name":   req.ToolName,
+			"cwd":         req.Cwd,
+			"session_id":  req.SessionID,
 		})
 		return
 	}
 
 	// Layer 3: Call Anthropic API directly
 	if s.ai == nil {
+		durationMs := float64(time.Since(evalStart).Microseconds()) / 1000.0
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"decision":   "deny",
-			"reason":     "anthropic API client not configured",
-			"tool_name":  req.ToolName,
-			"cwd":        req.Cwd,
-			"session_id": req.SessionID,
+			"decision":    "deny",
+			"reason":      "anthropic API client not configured",
+			"duration_ms": durationMs,
+			"tool_name":   req.ToolName,
+			"cwd":         req.Cwd,
+			"session_id":  req.SessionID,
 		})
 		return
 	}
@@ -457,17 +467,21 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 
 	evalResult, err := s.ai.EvaluateApproval(ctx, cfg.Prompts.Approval, req.ToolName, req.ToolInput, "")
 	if err != nil {
-		slog.Warn("Anthropic API error (approval)", "error", err)
+		durationMs := float64(time.Since(evalStart).Microseconds()) / 1000.0
+		slog.Warn("Anthropic API error (approval)", "error", err, "duration_ms", durationMs)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"decision":   "ask",
-			"reason":     fmt.Sprintf("pilot alert: evaluation failed (%v)", err),
-			"tool_name":  req.ToolName,
-			"cwd":        req.Cwd,
-			"session_id": req.SessionID,
+			"decision":    "ask",
+			"reason":      fmt.Sprintf("pilot alert: evaluation failed (%v)", err),
+			"duration_ms": durationMs,
+			"tool_name":   req.ToolName,
+			"cwd":         req.Cwd,
+			"session_id":  req.SessionID,
 		})
 		return
 	}
+
+	durationMs := float64(time.Since(evalStart).Microseconds()) / 1000.0
 
 	decision := "deny"
 	actionType := "escalate"
@@ -478,6 +492,8 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 		confidence = 1.0
 	}
 
+	slog.Debug("Evaluate completed (haiku)", "tool", req.ToolName, "decision", decision, "duration_ms", durationMs)
+
 	// Emit SSE event
 	now := time.Now().UTC()
 	eventData, _ := json.Marshal(map[string]any{
@@ -485,6 +501,7 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 		"action_type": actionType,
 		"detail":      fmt.Sprintf("%s: %s", req.ToolName, evalResult.Reason),
 		"confidence":  confidence,
+		"duration_ms": durationMs,
 		"tool_name":   req.ToolName,
 		"tool_input":  req.ToolInput,
 		"cwd":         req.Cwd,
@@ -498,12 +515,30 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"decision":   decision,
-		"reason":     evalResult.Reason,
-		"confidence": confidence,
-		"tool_name":  req.ToolName,
-		"cwd":        req.Cwd,
-		"session_id": req.SessionID,
+		"decision":    decision,
+		"reason":      evalResult.Reason,
+		"confidence":  confidence,
+		"duration_ms": durationMs,
+		"tool_name":   req.ToolName,
+		"cwd":         req.Cwd,
+		"session_id":  req.SessionID,
+	})
+}
+
+// handleProfile returns aggregated evaluation timing stats.
+func (s *Server) handleProfile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	bySource := state.ReadProfile(0)
+	overall := state.ReadProfileAll(0)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"by_source": bySource,
+		"overall":   overall,
 	})
 }
 

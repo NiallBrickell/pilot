@@ -7,6 +7,8 @@
 package approve
 
 import (
+	"encoding/json"
+
 	"github.com/NiallBrickell/pilot/internal/config"
 )
 
@@ -19,8 +21,14 @@ type Decision struct {
 // Evaluate runs the tool call through the approval hierarchy.
 // Returns a Decision with the source that made it.
 func Evaluate(cfg *config.PilotConfig, toolName, toolInput, cwd string) *Decision {
+	// Parse toolInput JSON once — reused by all layers.
+	var parsed map[string]any
+	if len(toolInput) > 0 && toolInput[0] == '{' {
+		_ = json.Unmarshal([]byte(toolInput), &parsed)
+	}
+
 	// Layer 1: Claude Code settings
-	if result := CheckClaudeSettings(toolName, toolInput, cwd); result != "" {
+	if result := CheckClaudeSettings(toolName, parsed, toolInput, cwd); result != "" {
 		action := "passthrough"
 		if result == "deny" {
 			action = "deny"
@@ -33,7 +41,7 @@ func Evaluate(cfg *config.PilotConfig, toolName, toolInput, cwd string) *Decisio
 	}
 
 	// Layer 2: Pilot rules
-	if result := CheckPilotRules(cfg, toolName, toolInput, cwd); result != "" {
+	if result := CheckPilotRules(cfg, toolName, parsed, cwd); result != "" {
 		return &Decision{
 			Action: result,
 			Reason: "matched pilot rule",
