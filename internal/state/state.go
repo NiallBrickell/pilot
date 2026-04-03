@@ -194,10 +194,11 @@ func ReadState() (PilotState, error) {
 		}
 	}
 
-	// Recent actions (last 200)
+	// Recent actions (last 200, from the last hour only)
+	cutoff := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339Nano)
 	actionRows, err := db.Query(
 		`SELECT timestamp, action_type, detail, confidence, duration_ms, source, tool_name, tool_input, cwd, session_id
-		 FROM actions ORDER BY id DESC LIMIT 200`)
+		 FROM actions WHERE timestamp > ? ORDER BY id DESC LIMIT 200`, cutoff)
 	if err == nil {
 		defer actionRows.Close()
 		for actionRows.Next() {
