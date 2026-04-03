@@ -94,6 +94,7 @@ Pilot works completely standalone — the dashboard is optional.
 | `pilot approve` | PreToolUse hook handler (called by Claude Code) |
 | `pilot on-stop` | Stop hook handler (called by Claude Code) |
 | `pilot status` | Print current state as JSON |
+| `pilot profile` | Show evaluation timing stats (avg, p50, p95, p99 by source) |
 | `pilot wrap` | Wrap a Claude session in a monitored PTY |
 
 ## Configuration
