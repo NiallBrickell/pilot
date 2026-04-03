@@ -86,11 +86,11 @@ func (a *App) GetPilotStatus() pilot.PilotStatus {
 	}
 
 	if arr, ok := state["recent_actions"].([]any); ok {
-		start := 0
-		if len(arr) > 20 {
-			start = len(arr) - 20
+		limit := len(arr)
+		if limit > 20 {
+			limit = 20
 		}
-		for i := len(arr) - 1; i >= start; i-- {
+		for i := 0; i < limit; i++ {
 			item, ok := arr[i].(map[string]any)
 			if !ok {
 				continue
