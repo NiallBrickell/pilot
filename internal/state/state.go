@@ -415,7 +415,7 @@ func WriteLog(level, source, message string) {
 		time.Now().UTC().Format(time.RFC3339Nano), level, source, message)
 
 	// Keep last 500 logs
-	db.Exec(`DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY id DESC LIMIT 500)`)
+	db.Exec(`DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY timestamp DESC LIMIT 500)`)
 }
 
 // ReadLogs returns recent log entries.
@@ -424,7 +424,7 @@ func ReadLogs(limit int) []LogEntry {
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := db.Query(`SELECT timestamp, level, source, message FROM logs ORDER BY id DESC LIMIT ?`, limit)
+	rows, err := db.Query(`SELECT timestamp, level, source, message FROM logs ORDER BY timestamp DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil
 	}
