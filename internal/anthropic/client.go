@@ -43,13 +43,19 @@ type IdleResult struct {
 	Reasoning     string  `json:"reasoning"`
 }
 
+// ResolveAPIKey returns the Anthropic API key from the environment or from
+// envFilePath (typically ~/.pilot/.env). Returns "" if neither is set.
+func ResolveAPIKey(envFilePath string) string {
+	if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
+		return k
+	}
+	return loadKeyFromEnvFile(envFilePath)
+}
+
 // NewClient creates an Anthropic API client.
 // It resolves the API key from the environment or from envFilePath (typically ~/.pilot/.env).
 func NewClient(timeout time.Duration, envFilePath string) (*Client, error) {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		apiKey = loadKeyFromEnvFile(envFilePath)
-	}
+	apiKey := ResolveAPIKey(envFilePath)
 	if apiKey == "" {
 		return nil, fmt.Errorf("ANTHROPIC_API_KEY not set (checked env and %s)", envFilePath)
 	}

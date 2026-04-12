@@ -21,6 +21,29 @@ func PidFile() string      { return filepath.Join(PilotDir(), "pilot.pid") }
 func ServePidFile() string { return filepath.Join(PilotDir(), "pilot-serve.pid") }
 func AuthCache() string    { return filepath.Join(PilotDir(), ".auth-cache") }
 func EnvFile() string      { return filepath.Join(PilotDir(), ".env") }
+func BinPathFile() string  { return filepath.Join(PilotDir(), "pilot-bin") }
+
+// RecordBinaryPath writes the resolved path of the running pilot binary to
+// ~/.pilot/pilot-bin and creates a ~/.pilot/pilot symlink so external tools
+// (like the dashboard) can find it without relying on PATH or cwd.
+func RecordBinaryPath() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	_ = EnsureDir()
+	_ = os.WriteFile(BinPathFile(), []byte(exe), 0644)
+
+	link := filepath.Join(PilotDir(), "pilot")
+	if existing, err := os.Readlink(link); err == nil && existing == exe {
+		return
+	}
+	_ = os.Remove(link)
+	_ = os.Symlink(exe, link)
+}
 
 // EnsureDir creates the pilot directory if it doesn't exist.
 func EnsureDir() error {

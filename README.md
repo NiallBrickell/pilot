@@ -191,7 +191,7 @@ The dashboard connects to `pilot serve` via SSE — it's purely a UI layer. All 
 If you want to hack on the dashboard itself, you'll need [Wails v2](https://wails.io/docs/gettingstarted/installation):
 
 ```bash
-make dashboard          # dev mode with hot reload
+make dashboard-dev      # dev mode with hot reload
 make dashboard-build    # production build
 ```
 

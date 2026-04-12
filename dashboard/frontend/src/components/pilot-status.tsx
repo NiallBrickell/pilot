@@ -74,6 +74,8 @@ export function PilotStatusWidget() {
   const [filter, setFilter] = useState<ActionFilter>("all");
   const [expandedAction, setExpandedAction] = useState<number | null>(null);
   const [loading, setLoading] = useState<string | null>(null);
+  const [toggleError, setToggleError] = useState<string | null>(null);
+  const [showWelcome, setShowWelcome] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -134,6 +136,7 @@ export function PilotStatusWidget() {
   const handleTogglePilot = async () => {
     const wasOn = pilotOn;
     setLoading("pilot");
+    setToggleError(null);
     try {
       if (wasOn) {
         await uninstallPilotHooks();
@@ -141,20 +144,48 @@ export function PilotStatusWidget() {
         await installPilotHooks();
       }
       // Poll until state actually changes (server takes a moment to start/stop)
+      let changed = false;
       for (let i = 0; i < 20; i++) {
         await new Promise((r) => setTimeout(r, 500));
         const s = await getPilotStatus();
         const nowOn = s.available && s.hooks_installed;
         if (nowOn !== wasOn) {
           setStatus(s);
+          changed = true;
           break;
         }
       }
+      if (!changed) {
+        setToggleError(
+          wasOn
+            ? "Couldn't stop pilot — server still running. Try `pilot stop` in a terminal."
+            : "Couldn't start pilot — pilot binary not found. Run `pilot start` in a terminal once, then retry."
+        );
+      } else {
+        try { localStorage.setItem("pilot.welcomed", "1"); } catch {}
+        setShowWelcome(false);
+      }
     } catch (err) {
-      console.error("Pilot toggle failed:", err);
+      const msg = err instanceof Error ? err.message : String(err);
+      setToggleError(`Pilot toggle failed: ${msg}`);
     } finally {
       setLoading(null);
     }
+  };
+
+  // First-run welcome: if pilot is off and the user has never enabled it,
+  // show a modal pointing at the toggle.
+  useEffect(() => {
+    if (!status) return;
+    if (pilotOn) return;
+    let welcomed = false;
+    try { welcomed = localStorage.getItem("pilot.welcomed") === "1"; } catch {}
+    if (!welcomed) setShowWelcome(true);
+  }, [status, pilotOn]);
+
+  const dismissWelcome = () => {
+    try { localStorage.setItem("pilot.welcomed", "1"); } catch {}
+    setShowWelcome(false);
   };
 
   return (
@@ -210,6 +241,50 @@ export function PilotStatusWidget() {
           </div>
         </div>
       </div>
+
+      {/* Toggle error */}
+      {toggleError && (
+        <div className="px-6 py-2 border-b border-border/50 bg-destructive/10">
+          <div className="flex items-start justify-between gap-3 text-xs text-destructive">
+            <span>{toggleError}</span>
+            <button
+              onClick={() => setToggleError(null)}
+              className="text-destructive/70 hover:text-destructive flex-shrink-0"
+            >
+              &times;
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* First-run welcome modal */}
+      {showWelcome && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-background border border-border rounded-lg shadow-lg p-6 max-w-sm mx-4 space-y-4">
+            <h2 className="text-lg font-semibold">Welcome to Pilot</h2>
+            <p className="text-sm text-muted-foreground">
+              Pilot auto-approves safe Claude Code tool calls, escalates risky ones,
+              and nudges Claude when it stops too early. Enable it to install hooks
+              and start the server.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={dismissWelcome}
+                className="px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground rounded hover:bg-muted/50 transition-colors"
+              >
+                Not now
+              </button>
+              <button
+                onClick={handleTogglePilot}
+                disabled={loading === "pilot"}
+                className="px-4 py-1.5 text-sm font-medium bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors disabled:opacity-50"
+              >
+                {loading === "pilot" ? "Enabling..." : "Enable pilot"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Pending approvals */}
       {pendingApprovals.size > 0 && (

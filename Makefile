@@ -1,4 +1,4 @@
-.PHONY: build start stop dev clean dashboard dashboard-build
+.PHONY: build start stop dev clean dashboard dashboard-dev dashboard-build
 
 build:
 	go build -o pilot .
@@ -16,6 +16,9 @@ clean:
 	rm -f pilot
 
 dashboard: build
+	./pilot dashboard
+
+dashboard-dev:
 	cd dashboard && wails dev
 
 dashboard-build:

@@ -24,6 +24,16 @@ func init() {
 }
 
 func runDashboard(cmd *cobra.Command, args []string) error {
+	paths.RecordBinaryPath()
+
+	// Make sure pilot is fully set up before opening the GUI so the dashboard
+	// opens to a working state. runStart is idempotent: it (re)installs hooks
+	// and (re)starts the serve process. If it fails (e.g. missing API key) we
+	// abort so the user sees the real error instead of a silently-broken GUI.
+	if err := runStart(cmd, args); err != nil {
+		return err
+	}
+
 	appPath := findDashboardApp()
 	if appPath == "" {
 		fmt.Println("Dashboard not found locally. Downloading from GitHub releases...")

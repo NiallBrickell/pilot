@@ -42,6 +42,15 @@ type PilotAction struct {
 
 // FindPilotBinary locates the pilot binary.
 func FindPilotBinary() (string, error) {
+	// Check ~/.pilot/pilot-bin (recorded by `pilot start` / `pilot dashboard`)
+	if data, err := os.ReadFile(filepath.Join(pilotDir(), "pilot-bin")); err == nil {
+		path := strings.TrimSpace(string(data))
+		if path != "" {
+			if _, err := os.Stat(path); err == nil {
+				return path, nil
+			}
+		}
+	}
 	// Check PATH
 	if p, err := exec.LookPath("pilot"); err == nil {
 		return p, nil

@@ -94,16 +94,17 @@ func runApprove(cmd *cobra.Command, args []string) error {
 
 	cfg := config.Load()
 
-	// Evaluate via serve. If serve isn't running, fail fast — don't hang.
+	// Evaluate via serve. If serve isn't running, fail open — pilot is
+	// effectively off, so the hook should be a silent no-op rather than
+	// forcing the user to approve every command.
 	result, ok := evaluateViaServer(cfg, toolName, toolInput, sessionCwd, sessionID, transcriptPath, userMsgHash)
 	if !ok {
-		// Serve not running. Let Claude prompt the user normally.
-		reason := "pilot: serve not running — run 'pilot serve' or toggle pilot on in dashboard"
-		slog.Warn(reason)
+		reason := "pilot: serve not running, allowing"
+		slog.Debug(reason)
 		return printJSON(hookResponse{
 			HookSpecificOutput: preToolUseOutput{
 				HookEventName:            "PreToolUse",
-				PermissionDecision:       "ask",
+				PermissionDecision:       "allow",
 				PermissionDecisionReason: &reason,
 			},
 		})

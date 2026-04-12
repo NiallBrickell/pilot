@@ -4,13 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/NiallBrickell/pilot/internal/anthropic"
 	"github.com/NiallBrickell/pilot/internal/config"
 	"github.com/NiallBrickell/pilot/internal/paths"
 	"github.com/spf13/cobra"
@@ -36,6 +39,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	pilotBin := findPilotBinary()
+	paths.RecordBinaryPath()
+
+	// Preflight: pilot serve will exit immediately without an API key, which
+	// would cause silent toggle failures in the dashboard. Catch it here.
+	if anthropic.ResolveAPIKey(paths.EnvFile()) == "" {
+		return fmt.Errorf("ANTHROPIC_API_KEY not set\n\nSet it in your shell or write it to %s, e.g.:\n  echo 'ANTHROPIC_API_KEY=sk-ant-...' > %s", paths.EnvFile(), paths.EnvFile())
+	}
 
 	// Install hooks into ~/.claude/settings.json
 	if err := installHooks(pilotBin); err != nil {
@@ -50,10 +60,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Stop existing serve if running
 	stopServeProcess()
 
-	// Start serve in background
+	// Start serve in background and capture stderr so we can report startup
+	// failures back to the user instead of dying silently.
+	logPath := filepath.Join(paths.PilotDir(), "pilot-serve.log")
+	logFile, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	serveCmd := exec.Command(pilotBin, "serve")
-	serveCmd.Stdout = nil
-	serveCmd.Stderr = nil
+	serveCmd.Stdout = logFile
+	serveCmd.Stderr = logFile
 	serveCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := serveCmd.Start(); err != nil {
@@ -64,9 +77,37 @@ func runStart(cmd *cobra.Command, args []string) error {
 	os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", serveCmd.Process.Pid)), 0644)
 	go serveCmd.Wait()
 
+	// Verify server actually came up rather than dying immediately.
+	port := cfg.General.SSEPort
+	if port == 0 {
+		port = 9721
+	}
+	if err := waitForServe(port, 3*time.Second); err != nil {
+		// Surface log contents so the user sees the real reason.
+		logData, _ := os.ReadFile(logPath)
+		return fmt.Errorf("pilot serve failed to start: %w\n\nServer log:\n%s", err, string(logData))
+	}
+
 	fmt.Printf("Server started (pid %d)\n", serveCmd.Process.Pid)
 	fmt.Println("Pilot is running")
 	return nil
+}
+
+func waitForServe(port int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: 200 * time.Millisecond}
+	url := fmt.Sprintf("http://localhost:%d/status", port)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("server did not respond on port %d within %s", port, timeout)
 }
 
 func runStop(cmd *cobra.Command, args []string) error {
@@ -166,14 +207,8 @@ func mergeHookEntries(existing any, pilotBin string, pilotEntries ...map[string]
 	if arr, ok := existing.([]any); ok {
 		for _, entry := range arr {
 			entryJSON, _ := json.Marshal(entry)
-			s := string(entryJSON)
-			if strings.Contains(s, pilotBin) {
-				continue // Remove old pilot entry, we'll add the new ones
-			}
-			if strings.Contains(s, "pilot approve") || strings.Contains(s, "pilot interrogate") || strings.Contains(s, "pilot on-stop") {
-				// Old pilot binary at a different path — warn and skip
-				fmt.Fprintf(os.Stderr, "Warning: replacing existing pilot hook entry (old path)\n")
-				continue
+			if isPilotHookEntry(string(entryJSON)) {
+				continue // Replace any pre-existing pilot entry
 			}
 			result = append(result, entry)
 		}
@@ -183,6 +218,14 @@ func mergeHookEntries(existing any, pilotBin string, pilotEntries ...map[string]
 		result = append(result, entry)
 	}
 	return result
+}
+
+// isPilotHookEntry returns true if a serialized hook entry references one of
+// pilot's subcommands, regardless of the binary path.
+func isPilotHookEntry(entryJSON string) bool {
+	return strings.Contains(entryJSON, "pilot approve") ||
+		strings.Contains(entryJSON, "pilot interrogate") ||
+		strings.Contains(entryJSON, "pilot on-stop")
 }
 
 func uninstallHooks() error {
@@ -203,37 +246,26 @@ func uninstallHooks() error {
 		return nil
 	}
 
-	bin := findPilotBinary()
-
-	// Remove pilot entries from PreToolUse
-	if pre, ok := hooks["PreToolUse"].([]any); ok {
+	// Remove pilot entries from PreToolUse and Stop. Match by command name
+	// (pilot approve / interrogate / on-stop) rather than by binary path so
+	// we catch entries installed via a different path (e.g. ~/.pilot/pilot
+	// symlink vs the working-dir build).
+	for _, key := range []string{"PreToolUse", "Stop"} {
+		arr, ok := hooks[key].([]any)
+		if !ok {
+			continue
+		}
 		var filtered []any
-		for _, entry := range pre {
+		for _, entry := range arr {
 			entryJSON, _ := json.Marshal(entry)
-			if !strings.Contains(string(entryJSON), bin) {
+			if !isPilotHookEntry(string(entryJSON)) {
 				filtered = append(filtered, entry)
 			}
 		}
 		if len(filtered) == 0 {
-			delete(hooks, "PreToolUse")
+			delete(hooks, key)
 		} else {
-			hooks["PreToolUse"] = filtered
-		}
-	}
-
-	// Remove pilot entries from Stop
-	if stop, ok := hooks["Stop"].([]any); ok {
-		var filtered []any
-		for _, entry := range stop {
-			entryJSON, _ := json.Marshal(entry)
-			if !strings.Contains(string(entryJSON), bin) {
-				filtered = append(filtered, entry)
-			}
-		}
-		if len(filtered) == 0 {
-			delete(hooks, "Stop")
-		} else {
-			hooks["Stop"] = filtered
+			hooks[key] = filtered
 		}
 	}
 

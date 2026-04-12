@@ -5,8 +5,10 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "pilot",
-	Short: "AI copilot for Claude Code sessions",
+	Use:           "pilot",
+	Short:         "AI copilot for Claude Code sessions",
+	SilenceUsage:  true,
+	SilenceErrors: false,
 }
 
 func Execute() error {
