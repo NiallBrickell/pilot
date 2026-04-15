@@ -156,10 +156,11 @@ func evaluateIdleViaServer(cfg *config.PilotConfig, context, cwd, sessionID stri
 	return true
 }
 
-// buildConversationSummary reads the transcript and builds a structured summary:
-// - User's original request (first user message)
-// - All user messages (intent/corrections)
-// - Recent assistant text (last few messages, skipping tool use noise)
+// buildConversationSummary reads the transcript and builds a structured summary
+// from the tail of the transcript only. We deliberately do NOT surface a
+// "first user message" as an immutable original request: long-running sessions
+// accumulate many unrelated topics, and treating stale early turns as the
+// current goal caused the evaluator to nudge about abandoned topics.
 func buildConversationSummary(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -167,7 +168,6 @@ func buildConversationSummary(path string) (string, error) {
 	}
 
 	allLines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	// Only parse last 200 lines to keep it fast for long sessions
 	startLine := 0
 	if len(allLines) > 200 {
 		startLine = len(allLines) - 200
@@ -226,50 +226,14 @@ func buildConversationSummary(path string) (string, error) {
 
 	var sb strings.Builder
 
-	// Section 1: User's original request (scan from beginning of file, not just tail)
-	for _, line := range allLines[:min(len(allLines), 50)] {
-		var entry map[string]any
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-		msg, _ := entry["message"].(map[string]any)
-		if msg == nil {
-			continue
-		}
-		role, _ := msg["role"].(string)
-		if role != "user" {
-			continue
-		}
-		var text string
-		switch content := msg["content"].(type) {
-		case string:
-			text = content
-		case []any:
-			for _, item := range content {
-				if m, ok := item.(map[string]any); ok {
-					if t, ok := m["text"].(string); ok {
-						text = t
-						break
-					}
-				}
-			}
-		}
-		if text != "" {
-			sb.WriteString("## USER'S ORIGINAL REQUEST:\n")
-			sb.WriteString(truncateStr(text, 1000))
-			sb.WriteString("\n\n")
-			break
-		}
-	}
-
-	// Section 2: Recent user messages (last 5 — shows recent intent/corrections)
+	// Recent user messages (last 5 — shows recent intent/corrections).
 	var userMsgs []message
 	for _, m := range allMessages {
 		if m.role == "user" {
 			userMsgs = append(userMsgs, m)
 		}
 	}
-	if len(userMsgs) > 1 {
+	if len(userMsgs) > 0 {
 		sb.WriteString("## RECENT USER MESSAGES:\n")
 		start := 0
 		if len(userMsgs) > 5 {
@@ -283,7 +247,7 @@ func buildConversationSummary(path string) (string, error) {
 		sb.WriteString("\n")
 	}
 
-	// Section 3: Last 3 assistant messages
+	// Last 3 assistant messages
 	sb.WriteString("## RECENT ASSISTANT MESSAGES:\n")
 	var assistantMsgs []message
 	for _, m := range allMessages {
