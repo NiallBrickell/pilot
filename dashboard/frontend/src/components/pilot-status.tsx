@@ -123,6 +123,18 @@ export function PilotStatusWidget() {
     return allActions.filter((a) => a.action_type === filter);
   }, [allActions, filter]);
 
+  const pilotOn = !!status && status.available && status.hooks_installed;
+
+  // First-run welcome: if pilot is off and the user has never enabled it,
+  // show a modal pointing at the toggle.
+  useEffect(() => {
+    if (!status) return;
+    if (pilotOn) return;
+    let welcomed = false;
+    try { welcomed = localStorage.getItem("pilot.welcomed") === "1"; } catch {}
+    if (!welcomed) setShowWelcome(true);
+  }, [status, pilotOn]);
+
   if (!status) {
     return (
       <div className="p-6 text-muted-foreground text-sm">
@@ -130,8 +142,6 @@ export function PilotStatusWidget() {
       </div>
     );
   }
-
-  const pilotOn = status.available && status.hooks_installed;
 
   const handleTogglePilot = async () => {
     const wasOn = pilotOn;
@@ -172,16 +182,6 @@ export function PilotStatusWidget() {
       setLoading(null);
     }
   };
-
-  // First-run welcome: if pilot is off and the user has never enabled it,
-  // show a modal pointing at the toggle.
-  useEffect(() => {
-    if (!status) return;
-    if (pilotOn) return;
-    let welcomed = false;
-    try { welcomed = localStorage.getItem("pilot.welcomed") === "1"; } catch {}
-    if (!welcomed) setShowWelcome(true);
-  }, [status, pilotOn]);
 
   const dismissWelcome = () => {
     try { localStorage.setItem("pilot.welcomed", "1"); } catch {}
