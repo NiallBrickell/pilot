@@ -8,12 +8,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"time"
 
 	"github.com/NiallBrickell/pilot/internal/paths"
 	"github.com/spf13/cobra"
 )
 
-const dashboardRepo = "NiallBrickell/pilot"
+const (
+	dashboardRepo        = "NiallBrickell/pilot"
+	dashboardVersionFile = "pilot-dashboard.version"
+)
 
 func init() {
 	rootCmd.AddCommand(&cobra.Command{
@@ -35,18 +40,74 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	}
 
 	appPath := findDashboardApp()
-	if appPath == "" {
-		fmt.Println("Dashboard not found locally. Downloading from GitHub releases...")
-		var err error
-		appPath, err = downloadDashboard()
-		if err != nil {
-			return fmt.Errorf("failed to download dashboard: %w\n\nDownload manually from https://github.com/"+dashboardRepo+"/releases", err)
+	latest, latestErr := latestDashboardTag()
+	installed := installedDashboardVersion()
+
+	needDownload := appPath == "" || (latestErr == nil && installed != latest)
+
+	if needDownload {
+		if latestErr != nil {
+			return fmt.Errorf("dashboard not installed and couldn't check latest release: %w\n\nDownload manually from https://github.com/%s/releases", latestErr, dashboardRepo)
 		}
-		fmt.Printf("Downloaded to %s\n", appPath)
+		if appPath == "" {
+			fmt.Printf("Downloading dashboard %s...\n", latest)
+		} else {
+			shown := installed
+			if shown == "" {
+				shown = "unknown"
+			}
+			fmt.Printf("Updating dashboard (%s -> %s)...\n", shown, latest)
+		}
+		var err error
+		appPath, err = downloadDashboard(latest)
+		if err != nil {
+			return fmt.Errorf("failed to download dashboard: %w\n\nDownload manually from https://github.com/%s/releases", err, dashboardRepo)
+		}
+		if err := writeInstalledDashboardVersion(latest); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: couldn't record dashboard version: %v\n", err)
+		}
+	} else if latestErr != nil {
+		fmt.Fprintln(os.Stderr, "warning: couldn't check for dashboard updates, using local copy")
 	}
 
 	fmt.Println("Launching dashboard...")
 	return launchDashboard(appPath)
+}
+
+func latestDashboardTag() (string, error) {
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequest("HEAD", fmt.Sprintf("https://github.com/%s/releases/latest", dashboardRepo), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		return "", fmt.Errorf("no redirect from releases/latest (HTTP %d — has a release been published?)", resp.StatusCode)
+	}
+	idx := strings.LastIndex(loc, "/")
+	if idx == -1 || idx == len(loc)-1 {
+		return "", fmt.Errorf("malformed release URL: %s", loc)
+	}
+	return loc[idx+1:], nil
+}
+
+func installedDashboardVersion() string {
+	data, _ := os.ReadFile(filepath.Join(paths.PilotDir(), dashboardVersionFile))
+	return strings.TrimSpace(string(data))
+}
+
+func writeInstalledDashboardVersion(tag string) error {
+	return os.WriteFile(filepath.Join(paths.PilotDir(), dashboardVersionFile), []byte(tag), 0644)
 }
 
 func findDashboardApp() string {
@@ -69,7 +130,7 @@ func findDashboardApp() string {
 	return ""
 }
 
-func downloadDashboard() (string, error) {
+func downloadDashboard(tag string) (string, error) {
 	paths.EnsureDir()
 
 	var assetName string
@@ -82,8 +143,7 @@ func downloadDashboard() (string, error) {
 		return "", fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
 
-	// Get latest release download URL
-	url := fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", dashboardRepo, assetName)
+	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", dashboardRepo, tag, assetName)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -113,12 +173,16 @@ func downloadDashboard() (string, error) {
 	// Extract
 	switch runtime.GOOS {
 	case "darwin":
-		// Unzip .app bundle
+		// Wipe any previous install so stale files from older bundles don't linger.
+		appPath := filepath.Join(pilotDir, "pilot-dashboard.app")
+		if err := os.RemoveAll(appPath); err != nil {
+			return "", fmt.Errorf("failed to remove existing dashboard: %w", err)
+		}
 		cmd := exec.Command("unzip", "-o", "-q", tmpFile.Name(), "-d", pilotDir)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("unzip failed: %s: %w", string(out), err)
 		}
-		return filepath.Join(pilotDir, "pilot-dashboard.app"), nil
+		return appPath, nil
 
 	case "linux":
 		cmd := exec.Command("tar", "xzf", tmpFile.Name(), "-C", pilotDir)
