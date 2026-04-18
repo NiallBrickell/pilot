@@ -287,9 +287,15 @@ export function PilotConfigPage() {
         </section>
 
         <section className="mb-8">
-          <h2 className="text-sm font-semibold text-foreground mb-3">
-            Prompts
-          </h2>
+          <div className="flex items-center gap-2 mb-3">
+            <h2 className="text-sm font-semibold text-foreground">Prompts</h2>
+            {promptsStatus?.state === "up_to_date" && (
+              <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-success" />
+                Up to date with default
+              </span>
+            )}
+          </div>
 
           {promptsStatus?.state === "behind" && (
             <div className="mb-4 p-3 rounded-md border border-info/40 bg-info/10 flex items-center justify-between gap-3">
