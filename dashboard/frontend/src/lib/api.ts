@@ -1,4 +1,10 @@
-import type { PilotStatus, PilotConfig, PilotLogEntry } from "./types";
+import type {
+  PilotStatus,
+  PilotConfig,
+  PilotLogEntry,
+  PromptsStatus,
+  ResetPromptsResult,
+} from "./types";
 
 declare global {
   interface Window {
@@ -13,6 +19,8 @@ declare global {
           GetPilotConfig(): Promise<PilotConfig>;
           SavePilotConfig(cfg: PilotConfig): Promise<void>;
           GetPilotLogs(): Promise<PilotLogEntry[]>;
+          GetPromptsStatus(): Promise<PromptsStatus>;
+          ResetPrompts(): Promise<ResetPromptsResult>;
         };
       };
     };
@@ -51,4 +59,12 @@ export async function savePilotConfig(cfg: PilotConfig): Promise<void> {
 
 export async function getPilotLogs(): Promise<PilotLogEntry[]> {
   return app().GetPilotLogs();
+}
+
+export async function getPromptsStatus(): Promise<PromptsStatus> {
+  return app().GetPromptsStatus();
+}
+
+export async function resetPrompts(): Promise<ResetPromptsResult> {
+  return app().ResetPrompts();
 }

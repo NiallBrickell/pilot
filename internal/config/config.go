@@ -19,8 +19,8 @@ func EmbeddedConfig() string {
 }
 
 var (
-	cfg  *PilotConfig
-	once sync.Once
+	cfg   *PilotConfig
+	cfgMu sync.RWMutex
 )
 
 type PilotConfig struct {
@@ -95,23 +95,40 @@ func ConfigPath() string {
 }
 
 func Load() *PilotConfig {
-	once.Do(func() {
-		cfg = &PilotConfig{}
-		path := configPath()
-		content, err := os.ReadFile(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not read %s: %v. Using defaults.\n", path, err)
-			if _, err2 := toml.Decode(embeddedConfig, cfg); err2 != nil {
-				panic("embedded pilot.toml must be valid: " + err2.Error())
-			}
-			return
+	cfgMu.RLock()
+	if cfg != nil {
+		defer cfgMu.RUnlock()
+		return cfg
+	}
+	cfgMu.RUnlock()
+	return Reload()
+}
+
+// Reload forces a re-read of pilot.toml from disk, replacing the cached config.
+// Callers that were holding a pointer returned by a prior Load() keep reading
+// the old snapshot for the duration of their request — safe for any handler
+// that fetches cfg once at the top.
+func Reload() *PilotConfig {
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+
+	fresh := &PilotConfig{}
+	path := configPath()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not read %s: %v. Using defaults.\n", path, err)
+		if _, err2 := toml.Decode(embeddedConfig, fresh); err2 != nil {
+			panic("embedded pilot.toml must be valid: " + err2.Error())
 		}
-		if _, err := toml.Decode(string(content), cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not parse pilot.toml: %v. Using defaults.\n", err)
-			if _, err2 := toml.Decode(embeddedConfig, cfg); err2 != nil {
-				panic("embedded pilot.toml must be valid: " + err2.Error())
-			}
+		cfg = fresh
+		return cfg
+	}
+	if _, err := toml.Decode(string(content), fresh); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not parse pilot.toml: %v. Using defaults.\n", err)
+		if _, err2 := toml.Decode(embeddedConfig, fresh); err2 != nil {
+			panic("embedded pilot.toml must be valid: " + err2.Error())
 		}
-	})
+	}
+	cfg = fresh
 	return cfg
 }

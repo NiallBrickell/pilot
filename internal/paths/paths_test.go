@@ -202,6 +202,110 @@ new auto_respond
 	}
 }
 
+func TestPromptsStatusOf_States(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PILOT_HOME", dir)
+
+	embedded := `[general]
+sse_port = 9721
+
+[prompts]
+approval = "v2"
+auto_respond = "v2"
+`
+
+	// No config yet → no_config.
+	if s, _ := PromptsStatusOf(embedded); s.State != PromptsNoConfig {
+		t.Fatalf("expected no_config, got %q", s.State)
+	}
+
+	// Write old default, no baseline → bootstrapped.
+	oldUserConfig := `[general]
+sse_port = 9721
+
+[prompts]
+approval = "v1"
+auto_respond = "v1"
+`
+	if err := os.WriteFile(ConfigFile(), []byte(oldUserConfig), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := PromptsStatusOf(embedded); s.State != PromptsBootstrapped {
+		t.Fatalf("expected bootstrapped, got %q", s.State)
+	}
+
+	// Set baseline = user's v1 hash → behind (embedded is v2, user is on v1).
+	v1Hash, _ := promptHashFromTOML(oldUserConfig)
+	if err := os.WriteFile(PromptBaselineFile(), []byte(v1Hash), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := PromptsStatusOf(embedded); s.State != PromptsBehind {
+		t.Fatalf("expected behind, got %q", s.State)
+	}
+
+	// User edits prompts → customised.
+	editedConfig := strings.Replace(oldUserConfig, `approval = "v1"`, `approval = "CUSTOM"`, 1)
+	if err := os.WriteFile(ConfigFile(), []byte(editedConfig), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := PromptsStatusOf(embedded); s.State != PromptsCustomised {
+		t.Fatalf("expected customised, got %q", s.State)
+	}
+
+	// User prompts match embedded → up_to_date.
+	if err := os.WriteFile(ConfigFile(), []byte(embedded), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := PromptsStatusOf(embedded); s.State != PromptsUpToDate {
+		t.Fatalf("expected up_to_date, got %q", s.State)
+	}
+}
+
+func TestResetPromptsToDefault_OverridesCustomisation(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PILOT_HOME", dir)
+
+	customised := `[general]
+sse_port = 9999
+
+[prompts]
+approval = "I HAVE EDITED THIS"
+auto_respond = "ALSO THIS"
+`
+	if err := os.WriteFile(ConfigFile(), []byte(customised), 0644); err != nil {
+		t.Fatal(err)
+	}
+	embedded := `[prompts]
+approval = "default approval"
+auto_respond = "default auto_respond"
+`
+	res, err := ResetPromptsToDefault(embedded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Upgraded {
+		t.Fatalf("expected reset to apply, got %+v", res)
+	}
+
+	out, _ := os.ReadFile(ConfigFile())
+	s := string(out)
+	if !strings.Contains(s, "sse_port = 9999") {
+		t.Fatalf("user's general settings lost:\n%s", s)
+	}
+	if strings.Contains(s, "I HAVE EDITED THIS") {
+		t.Fatalf("custom prompt not overridden:\n%s", s)
+	}
+	if !strings.Contains(s, "default approval") {
+		t.Fatalf("default prompt not applied:\n%s", s)
+	}
+
+	// Status should now report up_to_date and baseline should match embedded.
+	status, _ := PromptsStatusOf(embedded)
+	if status.State != PromptsUpToDate {
+		t.Fatalf("expected up_to_date after reset, got %q", status.State)
+	}
+}
+
 func TestUpgradeDefaults_SkipsWhenUserEditedPrompts(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PILOT_HOME", dir)

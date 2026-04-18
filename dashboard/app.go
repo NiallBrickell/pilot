@@ -136,6 +136,58 @@ func (a *App) SavePilotConfig(cfg pilot.PilotConfig) error {
 	return pilot.WritePilotConfig(cfg)
 }
 
+type PromptsStatus struct {
+	State        string `json:"state"`
+	UserHash     string `json:"user_hash"`
+	EmbeddedHash string `json:"embedded_hash"`
+	BaselineHash string `json:"baseline_hash"`
+}
+
+type ResetPromptsResult struct {
+	Upgraded   bool          `json:"upgraded"`
+	BackupPath string        `json:"backup_path"`
+	Reason     string        `json:"reason"`
+	Status     PromptsStatus `json:"status"`
+}
+
+// GetPromptsStatus asks the pilot serve process whether the user's prompts are
+// up-to-date, behind the embedded default, or customised.
+func (a *App) GetPromptsStatus() (PromptsStatus, error) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(a.baseURL() + "/config/prompts-status")
+	if err != nil {
+		return PromptsStatus{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return PromptsStatus{}, fmt.Errorf("serve returned %d", resp.StatusCode)
+	}
+	var s PromptsStatus
+	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+		return PromptsStatus{}, err
+	}
+	return s, nil
+}
+
+// ResetPrompts asks serve to force-replace the [prompts] section with the
+// embedded default (backing up the old file).
+func (a *App) ResetPrompts() (ResetPromptsResult, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(a.baseURL()+"/config/reset-prompts", "application/json", nil)
+	if err != nil {
+		return ResetPromptsResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ResetPromptsResult{}, fmt.Errorf("serve returned %d", resp.StatusCode)
+	}
+	var out ResetPromptsResult
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return ResetPromptsResult{}, err
+	}
+	return out, nil
+}
+
 type LogEntry struct {
 	Timestamp string `json:"timestamp"`
 	Level     string `json:"level"`

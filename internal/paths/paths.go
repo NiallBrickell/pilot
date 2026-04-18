@@ -146,13 +146,103 @@ func UpgradeDefaults(embeddedConfig string) (UpgradeResult, error) {
 		return UpgradeResult{Reason: "user_customised"}, nil
 	}
 
-	merged, err := replacePromptsSection(string(data), embeddedConfig)
+	return applyEmbeddedPrompts(data, embeddedConfig, embeddedHash, "pre-upgrade")
+}
+
+// PromptsState describes the relationship between user prompts and embedded default.
+type PromptsState string
+
+const (
+	PromptsUpToDate     PromptsState = "up_to_date"    // user == embedded
+	PromptsBehind       PromptsState = "behind"        // user == baseline, user != embedded
+	PromptsCustomised   PromptsState = "customised"    // user != baseline, user != embedded
+	PromptsBootstrapped PromptsState = "bootstrapped"  // no baseline recorded yet
+	PromptsNoConfig     PromptsState = "no_config"     // pilot.toml missing
+	PromptsParseError   PromptsState = "parse_error"   // couldn't parse user or embedded TOML
+)
+
+// PromptsStatus is the comparison between user prompts and embedded defaults.
+type PromptsStatus struct {
+	State        PromptsState `json:"state"`
+	UserHash     string       `json:"user_hash"`
+	EmbeddedHash string       `json:"embedded_hash"`
+	BaselineHash string       `json:"baseline_hash"`
+}
+
+// PromptsStatusOf reports whether the user's prompts match the embedded default,
+// differ but are upgrade-eligible (behind), or have been customised.
+func PromptsStatusOf(embeddedConfig string) (PromptsStatus, error) {
+	data, err := os.ReadFile(ConfigFile())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return PromptsStatus{State: PromptsNoConfig}, nil
+		}
+		return PromptsStatus{}, err
+	}
+
+	embeddedHash, err := promptHashFromTOML(embeddedConfig)
+	if err != nil {
+		return PromptsStatus{State: PromptsParseError}, nil
+	}
+	userHash, err := promptHashFromTOML(string(data))
+	if err != nil {
+		return PromptsStatus{State: PromptsParseError, EmbeddedHash: embeddedHash}, nil
+	}
+
+	baselineBytes, _ := os.ReadFile(PromptBaselineFile())
+	baseline := string(trimWhitespace(baselineBytes))
+
+	status := PromptsStatus{
+		UserHash:     userHash,
+		EmbeddedHash: embeddedHash,
+		BaselineHash: baseline,
+	}
+	switch {
+	case userHash == embeddedHash:
+		status.State = PromptsUpToDate
+	case baseline == "":
+		status.State = PromptsBootstrapped
+	case baseline == userHash:
+		status.State = PromptsBehind
+	default:
+		status.State = PromptsCustomised
+	}
+	return status, nil
+}
+
+// ResetPromptsToDefault force-replaces the [prompts] section with the embedded
+// default regardless of whether the user has customised it. Backs up the old
+// file first and refreshes the baseline. This is an explicit user action from
+// the dashboard — UpgradeDefaults handles the automatic path.
+func ResetPromptsToDefault(embeddedConfig string) (UpgradeResult, error) {
+	data, err := os.ReadFile(ConfigFile())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return UpgradeResult{Reason: "no_config"}, nil
+		}
+		return UpgradeResult{}, err
+	}
+	embeddedHash, err := promptHashFromTOML(embeddedConfig)
+	if err != nil {
+		return UpgradeResult{Reason: "parse_error"}, fmt.Errorf("parse embedded: %w", err)
+	}
+	return applyEmbeddedPrompts(data, embeddedConfig, embeddedHash, "pre-reset")
+}
+
+// applyEmbeddedPrompts does the surgical merge + backup + baseline write shared
+// by UpgradeDefaults (auto path) and ResetPromptsToDefault (user-initiated).
+// backupLabel goes into the backup filename so operators can tell them apart.
+func applyEmbeddedPrompts(userData []byte, embeddedConfig, embeddedHash, backupLabel string) (UpgradeResult, error) {
+	cfgPath := ConfigFile()
+	baselinePath := PromptBaselineFile()
+
+	merged, err := replacePromptsSection(string(userData), embeddedConfig)
 	if err != nil {
 		return UpgradeResult{}, fmt.Errorf("merge prompts: %w", err)
 	}
 
-	backup := cfgPath + ".pre-upgrade-" + time.Now().Format("20060102-150405") + ".bak"
-	if err := os.WriteFile(backup, data, 0644); err != nil {
+	backup := cfgPath + "." + backupLabel + "-" + time.Now().Format("20060102-150405") + ".bak"
+	if err := os.WriteFile(backup, userData, 0644); err != nil {
 		return UpgradeResult{}, fmt.Errorf("write backup: %w", err)
 	}
 	if err := os.WriteFile(cfgPath, []byte(merged), 0644); err != nil {

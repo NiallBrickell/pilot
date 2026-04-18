@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import type { PilotConfig, PilotLogEntry } from "../lib/types";
-import { getPilotConfig, savePilotConfig, getPilotLogs } from "../lib/api";
+import type { PilotConfig, PilotLogEntry, PromptsStatus } from "../lib/types";
+import {
+  getPilotConfig,
+  savePilotConfig,
+  getPilotLogs,
+  getPromptsStatus,
+  resetPrompts,
+} from "../lib/api";
 
 export function PilotConfigPage() {
   const navigate = useNavigate();
@@ -11,12 +17,49 @@ export function PilotConfigPage() {
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<PilotLogEntry[]>([]);
   const [showLogs, setShowLogs] = useState(false);
+  const [promptsStatus, setPromptsStatus] = useState<PromptsStatus | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [resetNotice, setResetNotice] = useState<string | null>(null);
 
   useEffect(() => {
     getPilotConfig()
       .then(setConfig)
       .catch((err) => setError(`Failed to load config: ${err}`));
+    getPromptsStatus()
+      .then(setPromptsStatus)
+      .catch(() => {
+        // serve not reachable — banner just stays hidden.
+      });
   }, []);
+
+  const handleResetPrompts = async (opts: { confirm: boolean }) => {
+    if (opts.confirm) {
+      const ok = window.confirm(
+        "Replace your prompts with the current defaults? Your current prompts will be backed up to ~/.pilot/pilot.toml.pre-reset-*.bak.",
+      );
+      if (!ok) return;
+    }
+    setResetting(true);
+    setResetNotice(null);
+    setError(null);
+    try {
+      const result = await resetPrompts();
+      setPromptsStatus(result.status);
+      // Reload the editable config so the textareas show the new prompts.
+      const fresh = await getPilotConfig();
+      setConfig(fresh);
+      setResetNotice(
+        result.backup_path
+          ? `Prompts updated. Backup at ${result.backup_path}`
+          : "Prompts updated.",
+      );
+      setTimeout(() => setResetNotice(null), 5000);
+    } catch (err) {
+      setError(`Failed to reset prompts: ${err}`);
+    } finally {
+      setResetting(false);
+    }
+  };
 
   const handleSave = async () => {
     if (!config) return;
@@ -247,6 +290,51 @@ export function PilotConfigPage() {
           <h2 className="text-sm font-semibold text-foreground mb-3">
             Prompts
           </h2>
+
+          {promptsStatus?.state === "behind" && (
+            <div className="mb-4 p-3 rounded-md border border-info/40 bg-info/10 flex items-center justify-between gap-3">
+              <div className="text-xs text-foreground">
+                <div className="font-medium">New default prompts available.</div>
+                <div className="text-muted-foreground mt-0.5">
+                  You haven't edited the prompts, so it's safe to upgrade. Your
+                  current file will be backed up first.
+                </div>
+              </div>
+              <button
+                onClick={() => handleResetPrompts({ confirm: false })}
+                disabled={resetting}
+                className="px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity disabled:opacity-50 whitespace-nowrap"
+              >
+                {resetting ? "Upgrading..." : "Upgrade"}
+              </button>
+            </div>
+          )}
+
+          {promptsStatus?.state === "customised" && (
+            <div className="mb-4 p-3 rounded-md border border-warning/40 bg-warning/10 flex items-center justify-between gap-3">
+              <div className="text-xs text-foreground">
+                <div className="font-medium">
+                  You've customised your prompts.
+                </div>
+                <div className="text-muted-foreground mt-0.5">
+                  Revert to the current defaults? Your edits will be backed up.
+                </div>
+              </div>
+              <button
+                onClick={() => handleResetPrompts({ confirm: true })}
+                disabled={resetting}
+                className="px-3 py-1.5 text-xs border border-border text-foreground rounded-md hover:bg-muted/50 transition-colors disabled:opacity-50 whitespace-nowrap"
+              >
+                {resetting ? "Reverting..." : "Revert to default"}
+              </button>
+            </div>
+          )}
+
+          {resetNotice && (
+            <div className="mb-4 p-2 rounded-md border border-border bg-muted/30 text-[11px] text-muted-foreground">
+              {resetNotice}
+            </div>
+          )}
 
           <Field
             label="Approval Prompt"

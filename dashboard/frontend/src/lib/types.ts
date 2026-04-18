@@ -71,3 +71,25 @@ export interface PilotApprovalResolved {
   outcome: "approved" | "rejected";
   resolved_by: "human" | "timeout";
 }
+
+export type PromptsStateValue =
+  | "up_to_date"
+  | "behind"
+  | "customised"
+  | "bootstrapped"
+  | "no_config"
+  | "parse_error";
+
+export interface PromptsStatus {
+  state: PromptsStateValue;
+  user_hash: string;
+  embedded_hash: string;
+  baseline_hash: string;
+}
+
+export interface ResetPromptsResult {
+  upgraded: boolean;
+  backup_path: string;
+  reason: string;
+  status: PromptsStatus;
+}

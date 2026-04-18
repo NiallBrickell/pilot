@@ -15,6 +15,7 @@ import (
 	"github.com/NiallBrickell/pilot/internal/anthropic"
 	"github.com/NiallBrickell/pilot/internal/approve"
 	"github.com/NiallBrickell/pilot/internal/config"
+	"github.com/NiallBrickell/pilot/internal/paths"
 	"github.com/NiallBrickell/pilot/internal/state"
 
 	"github.com/google/uuid"
@@ -136,6 +137,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/hooks/install", s.handleHooksInstall)
 	mux.HandleFunc("/hooks/uninstall", s.handleHooksUninstall)
 	mux.HandleFunc("/config", s.handleGetConfig)
+	mux.HandleFunc("/config/prompts-status", s.handlePromptsStatus)
+	mux.HandleFunc("/config/reset-prompts", s.handleResetPrompts)
 	mux.HandleFunc("/logs", s.handleLogs)
 	mux.HandleFunc("/internal/profile", s.handleProfile)
 
@@ -1012,6 +1015,49 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := config.Load()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(cfg)
+}
+
+// handlePromptsStatus returns whether the user's prompts are up-to-date, behind
+// (embedded default changed and they haven't edited), or customised.
+func (s *Server) handlePromptsStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	status, err := paths.PromptsStatusOf(config.EmbeddedConfig())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
+}
+
+// handleResetPrompts force-replaces the [prompts] section with the embedded
+// default. Used by the dashboard when the user explicitly clicks upgrade/revert.
+// Reloads the in-process config so the change takes effect without restart.
+func (s *Server) handleResetPrompts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	result, err := paths.ResetPromptsToDefault(config.EmbeddedConfig())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if result.Upgraded {
+		config.Reload()
+		slog.Info("Prompts reset to embedded default", "backup", result.BackupPath)
+	}
+	status, _ := paths.PromptsStatusOf(config.EmbeddedConfig())
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"upgraded":    result.Upgraded,
+		"backup_path": result.BackupPath,
+		"reason":      result.Reason,
+		"status":      status,
+	})
 }
 
 func mergeHookEntries(existing any, pilotEntry map[string]any) []any {
