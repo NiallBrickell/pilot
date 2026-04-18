@@ -27,7 +27,15 @@ func init() {
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
-	paths.EnsureSetup(config.EmbeddedConfig())
+	embedded := config.EmbeddedConfig()
+	paths.EnsureSetup(embedded)
+	if result, err := paths.UpgradeDefaults(embedded); err != nil {
+		slog.Warn("Default prompt upgrade check failed", "error", err)
+	} else if result.Upgraded {
+		slog.Info("Upgraded pilot.toml to new default prompts", "backup", result.BackupPath)
+	} else {
+		slog.Debug("Default prompt upgrade check", "reason", result.Reason)
+	}
 	cfg := config.Load()
 
 	// Kill any stale serve process on our port before starting

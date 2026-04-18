@@ -1,8 +1,15 @@
 package paths
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/BurntSushi/toml"
 )
 
 // PilotDir returns the base directory for pilot config and state.
@@ -15,13 +22,14 @@ func PilotDir() string {
 	return filepath.Join(home, ".pilot")
 }
 
-func ConfigFile() string   { return filepath.Join(PilotDir(), "pilot.toml") }
-func StateFile() string    { return filepath.Join(PilotDir(), "state.json") }
-func PidFile() string      { return filepath.Join(PilotDir(), "pilot.pid") }
-func ServePidFile() string { return filepath.Join(PilotDir(), "pilot-serve.pid") }
-func AuthCache() string    { return filepath.Join(PilotDir(), ".auth-cache") }
-func EnvFile() string      { return filepath.Join(PilotDir(), ".env") }
-func BinPathFile() string  { return filepath.Join(PilotDir(), "pilot-bin") }
+func ConfigFile() string         { return filepath.Join(PilotDir(), "pilot.toml") }
+func StateFile() string          { return filepath.Join(PilotDir(), "state.json") }
+func PidFile() string            { return filepath.Join(PilotDir(), "pilot.pid") }
+func ServePidFile() string       { return filepath.Join(PilotDir(), "pilot-serve.pid") }
+func AuthCache() string          { return filepath.Join(PilotDir(), ".auth-cache") }
+func EnvFile() string            { return filepath.Join(PilotDir(), ".env") }
+func BinPathFile() string        { return filepath.Join(PilotDir(), "pilot-bin") }
+func PromptBaselineFile() string { return filepath.Join(PilotDir(), ".prompt_baseline") }
 
 // RecordBinaryPath writes the resolved path of the running pilot binary to
 // ~/.pilot/pilot-bin and creates a ~/.pilot/pilot symlink so external tools
@@ -51,14 +59,208 @@ func EnsureDir() error {
 }
 
 // EnsureSetup creates ~/.pilot/ and writes a default pilot.toml if one doesn't exist.
-// embeddedConfig is the default config content to write.
+// On fresh install, also writes the prompt baseline so future default changes
+// can flow through via UpgradeDefaults.
 func EnsureSetup(embeddedConfig string) error {
 	if err := EnsureDir(); err != nil {
 		return err
 	}
 	cfgPath := ConfigFile()
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-		return os.WriteFile(cfgPath, []byte(embeddedConfig), 0644)
+		if err := os.WriteFile(cfgPath, []byte(embeddedConfig), 0644); err != nil {
+			return err
+		}
+		if hash, err := promptHashFromTOML(embeddedConfig); err == nil {
+			_ = os.WriteFile(PromptBaselineFile(), []byte(hash), 0644)
+		}
 	}
 	return nil
+}
+
+// UpgradeResult describes what UpgradeDefaults did.
+type UpgradeResult struct {
+	// Upgraded is true when the user's pilot.toml was replaced with the embedded default.
+	Upgraded bool
+	// BackupPath is the path to the pre-upgrade backup, if Upgraded is true.
+	BackupPath string
+	// Reason describes why no upgrade happened (empty when Upgraded is true).
+	// Values: "up_to_date", "user_customised", "bootstrapped", "no_config", "parse_error".
+	Reason string
+}
+
+// UpgradeDefaults re-writes ~/.pilot/pilot.toml with the embedded default IFF
+// the user hasn't touched the prompts section since we last recorded a baseline.
+// Called at serve startup — not on the hot approval path.
+//
+// Behaviour:
+//   - No config file yet → no-op (EnsureSetup handles initial write).
+//   - No baseline recorded yet → bootstrap: record current prompt hash as baseline,
+//     don't upgrade (we can't tell "old default" from "user edit" without history).
+//   - Current prompts match baseline but differ from embedded → user hasn't edited,
+//     embedded default changed, upgrade. Backs up the old file first.
+//   - Current prompts don't match baseline → user has customised, leave alone.
+//   - Current prompts match embedded → already on latest, refresh baseline if drifted.
+func UpgradeDefaults(embeddedConfig string) (UpgradeResult, error) {
+	cfgPath := ConfigFile()
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return UpgradeResult{Reason: "no_config"}, nil
+		}
+		return UpgradeResult{}, err
+	}
+
+	embeddedHash, err := promptHashFromTOML(embeddedConfig)
+	if err != nil {
+		return UpgradeResult{Reason: "parse_error"}, nil
+	}
+	userHash, err := promptHashFromTOML(string(data))
+	if err != nil {
+		return UpgradeResult{Reason: "parse_error"}, nil
+	}
+
+	baselinePath := PromptBaselineFile()
+	baselineBytes, err := os.ReadFile(baselinePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Bootstrap: record current user prompts as baseline. Future default
+			// changes will flow through iff the user doesn't edit the prompts
+			// between now and then.
+			if writeErr := os.WriteFile(baselinePath, []byte(userHash), 0644); writeErr != nil {
+				return UpgradeResult{}, writeErr
+			}
+			return UpgradeResult{Reason: "bootstrapped"}, nil
+		}
+		return UpgradeResult{}, err
+	}
+	baseline := string(trimWhitespace(baselineBytes))
+
+	if userHash == embeddedHash {
+		if baseline != embeddedHash {
+			_ = os.WriteFile(baselinePath, []byte(embeddedHash), 0644)
+		}
+		return UpgradeResult{Reason: "up_to_date"}, nil
+	}
+
+	if baseline != userHash {
+		return UpgradeResult{Reason: "user_customised"}, nil
+	}
+
+	merged, err := replacePromptsSection(string(data), embeddedConfig)
+	if err != nil {
+		return UpgradeResult{}, fmt.Errorf("merge prompts: %w", err)
+	}
+
+	backup := cfgPath + ".pre-upgrade-" + time.Now().Format("20060102-150405") + ".bak"
+	if err := os.WriteFile(backup, data, 0644); err != nil {
+		return UpgradeResult{}, fmt.Errorf("write backup: %w", err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(merged), 0644); err != nil {
+		return UpgradeResult{}, fmt.Errorf("write config: %w", err)
+	}
+	if err := os.WriteFile(baselinePath, []byte(embeddedHash), 0644); err != nil {
+		return UpgradeResult{}, fmt.Errorf("write baseline: %w", err)
+	}
+	return UpgradeResult{Upgraded: true, BackupPath: backup}, nil
+}
+
+// replacePromptsSection returns userConfig with its [prompts] section replaced
+// by the [prompts] section from embeddedConfig. All other content (general
+// settings, webhooks, comments, formatting) is preserved verbatim. If the user
+// file has no [prompts] section, the embedded one is appended.
+func replacePromptsSection(userConfig, embeddedConfig string) (string, error) {
+	embStart, embEnd, ok := extractSection(embeddedConfig, "prompts")
+	if !ok {
+		return "", fmt.Errorf("embedded config missing [prompts] section")
+	}
+	embBlock := embeddedConfig[embStart:embEnd]
+	if !strings.HasSuffix(embBlock, "\n") {
+		embBlock += "\n"
+	}
+
+	userStart, userEnd, userOk := extractSection(userConfig, "prompts")
+	if !userOk {
+		sep := ""
+		if len(userConfig) > 0 && !strings.HasSuffix(userConfig, "\n") {
+			sep = "\n"
+		}
+		return userConfig + sep + embBlock, nil
+	}
+	return userConfig[:userStart] + embBlock + userConfig[userEnd:], nil
+}
+
+// extractSection finds the byte range of a top-level [name] section in a TOML
+// string. The range starts at the header line and ends at the start of the
+// next top-level section (or end of file). Triple-quoted strings are honoured
+// so `[bracketed]` text inside a multiline prompt isn't mistaken for a header.
+// Subsections like [name.sub] are treated as part of the parent section.
+func extractSection(s, name string) (start, end int, ok bool) {
+	header := "[" + name + "]"
+	subPrefix := "[" + name + "."
+
+	inTriple := false
+	lineOffset := 0
+	inSection := false
+
+	for _, line := range strings.SplitAfter(s, "\n") {
+		// Toggle triple-quoted state for each """ on this line.
+		for rest := line; ; {
+			idx := strings.Index(rest, `"""`)
+			if idx < 0 {
+				break
+			}
+			inTriple = !inTriple
+			rest = rest[idx+3:]
+		}
+
+		if !inTriple {
+			trimmed := strings.TrimSpace(line)
+			if !inSection {
+				if trimmed == header {
+					start = lineOffset
+					inSection = true
+				}
+			} else if strings.HasPrefix(trimmed, "[") && trimmed != header && !strings.HasPrefix(trimmed, subPrefix) {
+				end = lineOffset
+				return start, end, true
+			}
+		}
+		lineOffset += len(line)
+	}
+	if inSection {
+		return start, len(s), true
+	}
+	return 0, 0, false
+}
+
+func promptHashFromTOML(s string) (string, error) {
+	var t struct {
+		Prompts map[string]string `toml:"prompts"`
+	}
+	if _, err := toml.Decode(s, &t); err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	for _, k := range []string{"approval", "auto_respond"} {
+		h.Write([]byte(k))
+		h.Write([]byte{0})
+		h.Write([]byte(t.Prompts[k]))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func trimWhitespace(b []byte) []byte {
+	start, end := 0, len(b)
+	for start < end && isSpace(b[start]) {
+		start++
+	}
+	for end > start && isSpace(b[end-1]) {
+		end--
+	}
+	return b[start:end]
+}
+
+func isSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
