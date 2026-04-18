@@ -85,11 +85,28 @@ func latestDashboardTag() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
+
+	// GitHub occasionally returns 5xx from its LB. Retry transient errors
+	// with short backoff so one blip doesn't strand users on a stale build.
+	backoffs := []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond}
+	var resp *http.Response
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		resp, lastErr = client.Do(req)
+		if lastErr == nil && resp.StatusCode < 500 {
+			break
+		}
+		if resp != nil {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP %d from releases/latest", resp.StatusCode)
+		}
+		if attempt >= len(backoffs) {
+			return "", lastErr
+		}
+		time.Sleep(backoffs[attempt])
 	}
 	defer resp.Body.Close()
+
 	loc := resp.Header.Get("Location")
 	if loc == "" {
 		return "", fmt.Errorf("no redirect from releases/latest (HTTP %d — has a release been published?)", resp.StatusCode)
