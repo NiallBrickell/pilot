@@ -20,6 +20,7 @@ export function PilotConfigPage() {
   const [promptsStatus, setPromptsStatus] = useState<PromptsStatus | null>(null);
   const [resetting, setResetting] = useState(false);
   const [resetNotice, setResetNotice] = useState<string | null>(null);
+  const [confirmingReset, setConfirmingReset] = useState(false);
 
   useEffect(() => {
     getPilotConfig()
@@ -32,20 +33,14 @@ export function PilotConfigPage() {
       });
   }, []);
 
-  const handleResetPrompts = async (opts: { confirm: boolean }) => {
-    if (opts.confirm) {
-      const ok = window.confirm(
-        "Replace your prompts with the current defaults? Your current prompts will be backed up to ~/.pilot/pilot.toml.pre-reset-*.bak.",
-      );
-      if (!ok) return;
-    }
+  const handleResetPrompts = async () => {
     setResetting(true);
     setResetNotice(null);
     setError(null);
+    setConfirmingReset(false);
     try {
       const result = await resetPrompts();
       setPromptsStatus(result.status);
-      // Reload the editable config so the textareas show the new prompts.
       const fresh = await getPilotConfig();
       setConfig(fresh);
       setResetNotice(
@@ -70,6 +65,7 @@ export function PilotConfigPage() {
       await savePilotConfig(config);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+      getPromptsStatus().then(setPromptsStatus).catch(() => {});
     } catch (err) {
       setError(`Failed to save: ${err}`);
     } finally {
@@ -307,7 +303,7 @@ export function PilotConfigPage() {
                 </div>
               </div>
               <button
-                onClick={() => handleResetPrompts({ confirm: false })}
+                onClick={handleResetPrompts}
                 disabled={resetting}
                 className="px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity disabled:opacity-50 whitespace-nowrap"
               >
@@ -326,13 +322,32 @@ export function PilotConfigPage() {
                   Revert to the current defaults? Your edits will be backed up.
                 </div>
               </div>
-              <button
-                onClick={() => handleResetPrompts({ confirm: true })}
-                disabled={resetting}
-                className="px-3 py-1.5 text-xs border border-border text-foreground rounded-md hover:bg-muted/50 transition-colors disabled:opacity-50 whitespace-nowrap"
-              >
-                {resetting ? "Reverting..." : "Revert to default"}
-              </button>
+              {confirmingReset ? (
+                <div className="flex items-center gap-2 whitespace-nowrap">
+                  <button
+                    onClick={handleResetPrompts}
+                    disabled={resetting}
+                    className="px-3 py-1.5 text-xs bg-warning/20 border border-warning/50 text-foreground rounded-md hover:bg-warning/30 transition-colors disabled:opacity-50"
+                  >
+                    {resetting ? "Reverting..." : "Yes, revert"}
+                  </button>
+                  <button
+                    onClick={() => setConfirmingReset(false)}
+                    disabled={resetting}
+                    className="px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmingReset(true)}
+                  disabled={resetting}
+                  className="px-3 py-1.5 text-xs border border-border text-foreground rounded-md hover:bg-muted/50 transition-colors disabled:opacity-50 whitespace-nowrap"
+                >
+                  Revert to default
+                </button>
+              )}
             </div>
           )}
 
