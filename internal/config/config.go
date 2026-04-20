@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/NiallBrickell/pilot/internal/paths"
@@ -17,11 +18,6 @@ var embeddedConfig string
 func EmbeddedConfig() string {
 	return embeddedConfig
 }
-
-var (
-	cfg   *PilotConfig
-	cfgMu sync.RWMutex
-)
 
 type PilotConfig struct {
 	General  GeneralConfig  `toml:"general"`
@@ -94,41 +90,55 @@ func ConfigPath() string {
 	return configPath()
 }
 
+var (
+	cacheMu      sync.RWMutex
+	cachedCfg    *PilotConfig
+	cachedMtime  time.Time
+	cachedPath   string
+)
+
+// Load returns the parsed pilot.toml. Cheap on the hot path: it stats the
+// file and only re-parses when mtime or path changes. Edits take effect
+// immediately with no restart.
 func Load() *PilotConfig {
-	cfgMu.RLock()
-	if cfg != nil {
-		defer cfgMu.RUnlock()
+	path := configPath()
+
+	var mtime time.Time
+	if info, err := os.Stat(path); err == nil {
+		mtime = info.ModTime()
+	}
+
+	cacheMu.RLock()
+	if cachedCfg != nil && cachedPath == path && cachedMtime.Equal(mtime) {
+		cfg := cachedCfg
+		cacheMu.RUnlock()
 		return cfg
 	}
-	cfgMu.RUnlock()
-	return Reload()
-}
+	cacheMu.RUnlock()
 
-// Reload forces a re-read of pilot.toml from disk, replacing the cached config.
-// Callers that were holding a pointer returned by a prior Load() keep reading
-// the old snapshot for the duration of their request — safe for any handler
-// that fetches cfg once at the top.
-func Reload() *PilotConfig {
-	cfgMu.Lock()
-	defer cfgMu.Unlock()
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	// Re-check under write lock in case another goroutine just refreshed.
+	if cachedCfg != nil && cachedPath == path && cachedMtime.Equal(mtime) {
+		return cachedCfg
+	}
 
-	fresh := &PilotConfig{}
-	path := configPath()
+	cfg := &PilotConfig{}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not read %s: %v. Using defaults.\n", path, err)
-		if _, err2 := toml.Decode(embeddedConfig, fresh); err2 != nil {
+		if _, err2 := toml.Decode(embeddedConfig, cfg); err2 != nil {
 			panic("embedded pilot.toml must be valid: " + err2.Error())
 		}
-		cfg = fresh
-		return cfg
-	}
-	if _, err := toml.Decode(string(content), fresh); err != nil {
+	} else if _, err := toml.Decode(string(content), cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not parse pilot.toml: %v. Using defaults.\n", err)
-		if _, err2 := toml.Decode(embeddedConfig, fresh); err2 != nil {
+		if _, err2 := toml.Decode(embeddedConfig, cfg); err2 != nil {
 			panic("embedded pilot.toml must be valid: " + err2.Error())
 		}
 	}
-	cfg = fresh
+
+	cachedCfg = cfg
+	cachedMtime = mtime
+	cachedPath = path
 	return cfg
 }

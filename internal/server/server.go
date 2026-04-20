@@ -1047,7 +1047,6 @@ func (s *Server) handleResetPrompts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if result.Upgraded {
-		config.Reload()
 		slog.Info("Prompts reset to embedded default", "backup", result.BackupPath)
 	}
 	status, _ := paths.PromptsStatusOf(config.EmbeddedConfig())
