@@ -181,6 +181,8 @@ Optional desktop GUI for pilot. Downloads automatically on first launch — no b
 
 This downloads the prebuilt app from GitHub releases to `~/.pilot/` and launches it. On macOS it opens as a native `.app`.
 
+Pushes to `main` run validation CI only. They do not publish new dashboard binaries. To make dashboard changes available through `./pilot dashboard` or `make dashboard`, create and push a `v*` tag; the Release workflow builds the CLI/dashboard artifacts and publishes them to GitHub Releases.
+
 ### Features
 
 - Live action timeline with SSE event stream
@@ -199,6 +201,17 @@ If you want to hack on the dashboard itself, you'll need [Wails v2](https://wail
 make dashboard-dev      # dev mode with hot reload
 make dashboard-build    # production build
 ```
+
+### Releasing
+
+Release tags drive installable artifacts:
+
+```bash
+git tag v0.1.7
+git push origin v0.1.7
+```
+
+The Release workflow runs on `v*` tags and uploads the prebuilt dashboard assets that `pilot dashboard` downloads from GitHub Releases.
 
 ## Runtime files
 

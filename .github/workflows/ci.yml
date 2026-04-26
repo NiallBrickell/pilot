@@ -1,4 +1,4 @@
-name: CI
+name: CI (validation only)
 
 on:
   push:
@@ -8,6 +8,15 @@ on:
   workflow_dispatch:
 
 jobs:
+  release-note:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain release path
+        run: |
+          echo "This workflow validates pushes and pull requests only."
+          echo "It does not publish CLI binaries or dashboard artifacts."
+          echo "To make changes available through 'pilot dashboard' / 'make dashboard', push a v* tag so the Release workflow publishes GitHub Release assets."
+
   cli:
     runs-on: ubuntu-latest
 
