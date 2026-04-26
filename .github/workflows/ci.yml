@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  cli:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test CLI
+        run: go test ./...
+
+      - name: Build CLI
+        run: go build -o /tmp/pilot .
+
+  dashboard:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: dashboard/go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 'lts/*'
+          cache: npm
+          cache-dependency-path: dashboard/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: dashboard/frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: dashboard/frontend
+        run: npm run build
+
+      - name: Test dashboard Go packages
+        working-directory: dashboard
+        run: go test ./...
