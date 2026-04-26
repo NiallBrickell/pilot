@@ -58,7 +58,7 @@ To stop: `make stop` (or `./pilot stop`). This removes hooks and kills the serve
 
 For Claude Code, the `PreToolUse` hook fires for: `Bash`, `Write`, `Edit`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Read`, `Grep`, `Glob`, and `Agent`.
 
-For Codex, Pilot installs `PreToolUse` guardrail hooks plus `PermissionRequest` approval hooks for `Bash`, `apply_patch`/`Edit`/`Write`, and MCP tools. Codex `PreToolUse` can only block, so auto-approval happens in `PermissionRequest`.
+For Codex, Pilot installs `PreToolUse` guardrail hooks plus `PermissionRequest` approval hooks for `Bash`, `apply_patch`/`Edit`/`Write`, and MCP tools. It also enables Codex's `exec_permission_approvals` and `request_permissions_tool` feature flags so sandbox/network escalation prompts can flow through `PermissionRequest`. Codex `PreToolUse` can only block, so auto-approval happens in `PermissionRequest`.
 
 When a hook fires, `pilot approve` or `pilot codex-approve` POSTs to `pilot serve`, which runs the approval hierarchy:
 
@@ -66,7 +66,7 @@ When a hook fires, `pilot approve` or `pilot codex-approve` POSTs to `pilot serv
 2. **Pilot rules** — fast pattern matching without LLM (extension point).
 3. **Haiku evaluation** — calls the Anthropic API directly with structured JSON output.
 
-If Codex still shows its own approval prompt for a command that Pilot should handle, first check `./pilot status` or `curl http://localhost:9721/status`. Pilot's Codex hook handlers fail open when `pilot serve` is unreachable, so a normal Codex prompt usually means the server is down or no decision was returned before Codex asked you.
+If Codex still shows its own approval prompt for a command that Pilot should handle, first check `./pilot status` or `curl http://localhost:9721/status`. Pilot's Codex hook handlers fail open when `pilot serve` is unreachable, so a normal Codex prompt usually means the server is down, the active Codex session was started before hooks/features were enabled, or no decision was returned before Codex asked you.
 
 ### Idle detection
 

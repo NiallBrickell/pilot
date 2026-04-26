@@ -63,6 +63,14 @@ func TestInstallAllAddsClaudeAndCodexHooks(t *testing.T) {
 	if !strings.Contains(string(configData), "[features]") || !strings.Contains(string(configData), "codex_hooks = true") {
 		t.Fatalf("Codex feature flag not enabled:\n%s", configData)
 	}
+	for _, want := range []string{
+		"exec_permission_approvals = true",
+		"request_permissions_tool = true",
+	} {
+		if !strings.Contains(string(configData), want) {
+			t.Fatalf("Codex permission feature flag %q not enabled:\n%s", want, configData)
+		}
+	}
 }
 
 func TestUninstallAllRemovesOnlyPilotHooks(t *testing.T) {

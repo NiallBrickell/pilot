@@ -118,7 +118,7 @@ func installClaudeHooks(bin string) error {
 }
 
 func installCodexHooks(bin string) error {
-	if err := ensureCodexHooksFeature(codexConfigPath()); err != nil {
+	if err := ensureCodexFeatures(codexConfigPath()); err != nil {
 		return err
 	}
 
@@ -261,35 +261,41 @@ func removePilotEntries(hooks map[string]any, key string) {
 	}
 }
 
-func ensureCodexHooksFeature(path string) error {
+func ensureCodexFeatures(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 
+	required := []string{
+		"codex_hooks",
+		"exec_permission_approvals",
+		"request_permissions_tool",
+	}
+	seen := make(map[string]bool, len(required))
 	content := string(data)
 	lines := strings.Split(content, "\n")
 	inFeatures := false
 	featuresSeen := false
-	codexHooksSeen := false
 	var out []string
 
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			if inFeatures && !codexHooksSeen {
-				out = append(out, "codex_hooks = true")
-				codexHooksSeen = true
+			if inFeatures {
+				out = appendMissingCodexFeatures(out, required, seen)
 			}
 			inFeatures = trimmed == "[features]"
 			if inFeatures {
 				featuresSeen = true
 			}
 		}
-		if inFeatures && strings.HasPrefix(trimmed, "codex_hooks") {
-			out = append(out, "codex_hooks = true")
-			codexHooksSeen = true
-			continue
+		if inFeatures {
+			if key, ok := codexFeatureAssignmentKey(trimmed); ok && isRequiredCodexFeature(key, required) {
+				out = append(out, key+" = true")
+				seen[key] = true
+				continue
+			}
 		}
 		if i == len(lines)-1 && trimmed == "" {
 			continue
@@ -297,18 +303,48 @@ func ensureCodexHooksFeature(path string) error {
 		out = append(out, line)
 	}
 
-	if inFeatures && !codexHooksSeen {
-		out = append(out, "codex_hooks = true")
+	if inFeatures {
+		out = appendMissingCodexFeatures(out, required, seen)
 	}
 	if !featuresSeen {
 		if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
 			out = append(out, "")
 		}
-		out = append(out, "[features]", "codex_hooks = true")
+		out = append(out, "[features]")
+		for _, key := range required {
+			out = append(out, key+" = true")
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
 	return os.WriteFile(path, []byte(strings.Join(out, "\n")+"\n"), 0600)
+}
+
+func appendMissingCodexFeatures(out []string, required []string, seen map[string]bool) []string {
+	for _, key := range required {
+		if !seen[key] {
+			out = append(out, key+" = true")
+			seen[key] = true
+		}
+	}
+	return out
+}
+
+func codexFeatureAssignmentKey(trimmed string) (string, bool) {
+	idx := strings.Index(trimmed, "=")
+	if idx == -1 {
+		return "", false
+	}
+	return strings.TrimSpace(trimmed[:idx]), true
+}
+
+func isRequiredCodexFeature(key string, required []string) bool {
+	for _, want := range required {
+		if key == want {
+			return true
+		}
+	}
+	return false
 }
