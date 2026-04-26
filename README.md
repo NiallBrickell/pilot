@@ -58,11 +58,11 @@ To stop: `make stop` (or `./pilot stop`). This removes hooks and kills the serve
 
 For Claude Code, the `PreToolUse` hook fires for: `Bash`, `Write`, `Edit`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Read`, `Grep`, `Glob`, and `Agent`.
 
-For Codex, Pilot installs `PreToolUse` guardrail hooks plus `PermissionRequest` approval hooks for `Bash`, `apply_patch`/`Edit`/`Write`, and MCP tools. It also enables Codex's `exec_permission_approvals` and `request_permissions_tool` feature flags so sandbox/network escalation prompts can flow through `PermissionRequest`. Codex `PreToolUse` can only block, so auto-approval happens in `PermissionRequest`.
+For Codex, Pilot installs `PreToolUse` trajectory-check hooks plus `PermissionRequest` approval hooks for `Bash`, `apply_patch`/`Edit`/`Write`, and MCP tools. It also enables Codex's `exec_permission_approvals` and `request_permissions_tool` feature flags so sandbox/network escalation prompts can flow through `PermissionRequest`. Codex `PreToolUse` can only block, so auto-approval happens in `PermissionRequest`.
 
 When a hook fires, `pilot approve` or `pilot codex-approve` POSTs to `pilot serve`, which runs the approval hierarchy:
 
-1. **Runtime settings** — for Claude Code, reads `~/.claude/settings.json` and `.claude/settings.local.json` walking up from the session's cwd. Codex uses its own approval prompt machinery, so Pilot skips Claude settings for Codex requests.
+1. **Runtime settings** — for Claude Code, reads `~/.claude/settings.json` and `.claude/settings.local.json` walking up from the session's cwd. For Codex, reads `~/.codex/config.toml` and treats trusted projects as locally approved for routine Bash/edit/write permission requests while still blocking obvious destructive commands.
 2. **Pilot rules** — fast pattern matching without LLM (extension point).
 3. **Haiku evaluation** — calls the Anthropic API directly with structured JSON output.
 
@@ -96,7 +96,7 @@ Pilot works completely standalone — the dashboard is optional.
 | `pilot dashboard` | Download (if needed) and launch the desktop GUI |
 | `pilot serve` | Start server in foreground (for debugging) |
 | `pilot approve` | Claude Code PreToolUse hook handler |
-| `pilot codex-approve` | Codex PreToolUse / PermissionRequest hook handler |
+| `pilot codex-approve` | Codex PermissionRequest hook handler |
 | `pilot on-stop` | Claude Code Stop hook handler |
 | `pilot codex-on-stop` | Codex Stop hook handler |
 | `pilot codex-interrogate` | Codex PreToolUse interrogation hook handler |
@@ -112,7 +112,7 @@ All config lives in `~/.pilot/pilot.toml`. Created automatically on first run. E
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `model` | `"haiku"` | Model for evaluations |
+| `model` | `"claude-haiku-4-5"` | Model for evaluations |
 | `confidence_threshold` | `0.8` | Min confidence for auto-responding to idle |
 | `idle_timeout_ms` | `3000` | Wait before checking for idle (ms) |
 | `pending_response_max_age_s` | `30` | Discard stale pending responses (s) |
@@ -121,6 +121,9 @@ All config lives in `~/.pilot/pilot.toml`. Created automatically on first run. E
 | `sse_port` | `9721` | SSE event stream port |
 | `max_concurrent_evals` | `4+2` | Max concurrent API calls (4 approval + 2 idle, separate semaphores) |
 | `evaluator_timeout_ms` | `15000` | Evaluator call timeout (ms) |
+| `monthly_spend_cap_usd` | `20.0` | Monthly Anthropic evaluator spend cap. `0` disables it. |
+| `input_cost_per_mtok_usd` | `1.0` | Input token price used for local spend estimates |
+| `output_cost_per_mtok_usd` | `5.0` | Output token price used for local spend estimates |
 | `interrogation_confidence` | `0.7` | Min confidence for interrogation redirects |
 
 ### Prompts

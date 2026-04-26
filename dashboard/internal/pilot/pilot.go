@@ -25,6 +25,8 @@ type PilotStatus struct {
 	WrapperRunning     bool          `json:"wrapper_running"`
 	SSEAvailable       bool          `json:"sse_available"`
 	SSEPort            int           `json:"sse_port"`
+	MonthlyUsage       MonthlyUsage  `json:"monthly_usage"`
+	MonthlySpendCapUSD float64       `json:"monthly_spend_cap_usd"`
 }
 
 type PilotStats struct {
@@ -32,6 +34,13 @@ type PilotStats struct {
 	ApprovalsEscalated   uint64 `json:"approvals_escalated"`
 	AutoResponses        uint64 `json:"auto_responses"`
 	AutoResponsesSkipped uint64 `json:"auto_responses_skipped"`
+}
+
+type MonthlyUsage struct {
+	Period           string  `json:"period"`
+	InputTokens      uint64  `json:"input_tokens"`
+	OutputTokens     uint64  `json:"output_tokens"`
+	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
 }
 
 type PilotAction struct {

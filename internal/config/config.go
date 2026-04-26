@@ -20,8 +20,8 @@ func EmbeddedConfig() string {
 }
 
 type PilotConfig struct {
-	General  GeneralConfig  `toml:"general"`
-	Prompts  PromptsConfig  `toml:"prompts"`
+	General  GeneralConfig   `toml:"general"`
+	Prompts  PromptsConfig   `toml:"prompts"`
 	Webhooks []WebhookConfig `toml:"webhooks"`
 }
 
@@ -35,8 +35,11 @@ type GeneralConfig struct {
 	SSEPort               int     `toml:"sse_port"`
 
 	// Evaluator settings
-	MaxConcurrentEvals  int `toml:"max_concurrent_evals"`
-	EvaluatorTimeoutMs  int `toml:"evaluator_timeout_ms"`
+	MaxConcurrentEvals   int     `toml:"max_concurrent_evals"`
+	EvaluatorTimeoutMs   int     `toml:"evaluator_timeout_ms"`
+	MonthlySpendCapUSD   float64 `toml:"monthly_spend_cap_usd"`
+	InputCostPerMTokUSD  float64 `toml:"input_cost_per_mtok_usd"`
+	OutputCostPerMTokUSD float64 `toml:"output_cost_per_mtok_usd"`
 
 	// Interrogation settings
 	InterrogationConfidence float64 `toml:"interrogation_confidence"`
@@ -47,6 +50,12 @@ type GeneralConfig struct {
 	// Interrogation still runs on schedule.
 	AutoApproveAll bool `toml:"auto_approve_all"`
 }
+
+const (
+	DefaultMonthlySpendCapUSD   = 20.0
+	DefaultInputCostPerMTokUSD  = 1.0
+	DefaultOutputCostPerMTokUSD = 5.0
+)
 
 type PromptsConfig struct {
 	Approval    string `toml:"approval"`
@@ -91,10 +100,10 @@ func ConfigPath() string {
 }
 
 var (
-	cacheMu      sync.RWMutex
-	cachedCfg    *PilotConfig
-	cachedMtime  time.Time
-	cachedPath   string
+	cacheMu     sync.RWMutex
+	cachedCfg   *PilotConfig
+	cachedMtime time.Time
+	cachedPath  string
 )
 
 // Load returns the parsed pilot.toml. Cheap on the hot path: it stats the
@@ -125,20 +134,43 @@ func Load() *PilotConfig {
 
 	cfg := &PilotConfig{}
 	content, err := os.ReadFile(path)
+	var md toml.MetaData
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not read %s: %v. Using defaults.\n", path, err)
-		if _, err2 := toml.Decode(embeddedConfig, cfg); err2 != nil {
+		if meta, err2 := toml.Decode(embeddedConfig, cfg); err2 != nil {
 			panic("embedded pilot.toml must be valid: " + err2.Error())
+		} else {
+			md = meta
 		}
-	} else if _, err := toml.Decode(string(content), cfg); err != nil {
+	} else if meta, err := toml.Decode(string(content), cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not parse pilot.toml: %v. Using defaults.\n", err)
-		if _, err2 := toml.Decode(embeddedConfig, cfg); err2 != nil {
+		if meta, err2 := toml.Decode(embeddedConfig, cfg); err2 != nil {
 			panic("embedded pilot.toml must be valid: " + err2.Error())
+		} else {
+			md = meta
 		}
+	} else {
+		md = meta
 	}
+	applyDefaults(cfg, md)
 
 	cachedCfg = cfg
 	cachedMtime = mtime
 	cachedPath = path
 	return cfg
+}
+
+func applyDefaults(cfg *PilotConfig, md toml.MetaData) {
+	if cfg.General.Model == "" || cfg.General.Model == "haiku" {
+		cfg.General.Model = "claude-haiku-4-5"
+	}
+	if !md.IsDefined("general", "monthly_spend_cap_usd") {
+		cfg.General.MonthlySpendCapUSD = DefaultMonthlySpendCapUSD
+	}
+	if !md.IsDefined("general", "input_cost_per_mtok_usd") || cfg.General.InputCostPerMTokUSD <= 0 {
+		cfg.General.InputCostPerMTokUSD = DefaultInputCostPerMTokUSD
+	}
+	if !md.IsDefined("general", "output_cost_per_mtok_usd") || cfg.General.OutputCostPerMTokUSD <= 0 {
+		cfg.General.OutputCostPerMTokUSD = DefaultOutputCostPerMTokUSD
+	}
 }

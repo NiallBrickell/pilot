@@ -55,6 +55,19 @@ func TestInstallAllAddsClaudeAndCodexHooks(t *testing.T) {
 			t.Fatalf("Codex hooks missing %q:\n%s", want, codexData)
 		}
 	}
+	var codexSettings map[string]any
+	if err := json.Unmarshal(codexData, &codexSettings); err != nil {
+		t.Fatal(err)
+	}
+	hooks := codexSettings["hooks"].(map[string]any)
+	preToolUse, _ := json.Marshal(hooks["PreToolUse"])
+	if strings.Contains(string(preToolUse), "pilot codex-approve") {
+		t.Fatalf("Codex PreToolUse must not run approval evaluation:\n%s", preToolUse)
+	}
+	permissionRequest, _ := json.Marshal(hooks["PermissionRequest"])
+	if !strings.Contains(string(permissionRequest), "pilot codex-approve") {
+		t.Fatalf("Codex PermissionRequest missing approval evaluation:\n%s", permissionRequest)
+	}
 
 	configData, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
 	if err != nil {

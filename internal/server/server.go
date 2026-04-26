@@ -236,6 +236,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	result["hooks_installed"] = hookStatus.Installed
 	result["claude_hooks_installed"] = hookStatus.ClaudeInstalled
 	result["codex_hooks_installed"] = hookStatus.CodexInstalled
+	cfg := config.Load()
+	result["monthly_usage"] = state.ReadMonthlyUsage(time.Now())
+	result["monthly_spend_cap_usd"] = cfg.General.MonthlySpendCapUSD
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
@@ -464,13 +467,33 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	model := cfg.General.Model
+	if model == "" {
+		model = "claude-haiku-4-5"
+	}
+	if capReached, usage := evaluatorSpendCapReached(cfg); capReached {
+		durationMs := float64(time.Since(evalStart).Microseconds()) / 1000.0
+		reason := fmt.Sprintf("monthly evaluator spend cap reached ($%.2f / $%.2f)", usage.EstimatedCostUSD, cfg.General.MonthlySpendCapUSD)
+		slog.Warn("Evaluate skipped: spend cap reached", "tool", req.ToolName, "spent", usage.EstimatedCostUSD, "cap", cfg.General.MonthlySpendCapUSD)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"decision":    "ask",
+			"reason":      reason,
+			"duration_ms": durationMs,
+			"tool_name":   req.ToolName,
+			"cwd":         req.Cwd,
+			"session_id":  req.SessionID,
+		})
+		return
+	}
+
 	s.evalSem <- struct{}{}
 	defer func() { <-s.evalSem }()
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.evalTimeout)
 	defer cancel()
 
-	evalResult, err := s.ai.EvaluateApproval(ctx, cfg.Prompts.Approval, req.ToolName, req.ToolInput, "")
+	evalResult, err := s.ai.EvaluateApproval(ctx, cfg.Prompts.Approval, req.ToolName, req.ToolInput, model)
 	if err != nil {
 		durationMs := float64(time.Since(evalStart).Microseconds()) / 1000.0
 		slog.Warn("Anthropic API error (approval)", "error", err, "duration_ms", durationMs)
@@ -485,6 +508,7 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	recordEvaluatorUsage("approval", model, cfg, evalResult.Usage)
 
 	durationMs := float64(time.Since(evalStart).Microseconds()) / 1000.0
 
@@ -634,13 +658,29 @@ func (s *Server) handleEvaluateIdle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	model := cfg.General.Model
+	if model == "" {
+		model = "claude-haiku-4-5"
+	}
+	if capReached, usage := evaluatorSpendCapReached(cfg); capReached {
+		slog.Warn("Idle evaluation skipped: spend cap reached", "spent", usage.EstimatedCostUSD, "cap", cfg.General.MonthlySpendCapUSD)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"should_respond": false,
+			"message":        "",
+			"confidence":     0,
+			"reasoning":      fmt.Sprintf("monthly evaluator spend cap reached ($%.2f / $%.2f)", usage.EstimatedCostUSD, cfg.General.MonthlySpendCapUSD),
+		})
+		return
+	}
+
 	s.idleSem <- struct{}{}
 	defer func() { <-s.idleSem }()
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.evalTimeout)
 	defer cancel()
 
-	idleResult, err := s.ai.EvaluateIdle(ctx, cfg.Prompts.AutoRespond, req.TranscriptContext, "")
+	idleResult, err := s.ai.EvaluateIdle(ctx, cfg.Prompts.AutoRespond, req.TranscriptContext, model)
 	if err != nil {
 		slog.Warn("Anthropic API error (idle)", "error", err)
 		w.Header().Set("Content-Type", "application/json")
@@ -652,6 +692,7 @@ func (s *Server) handleEvaluateIdle(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	recordEvaluatorUsage("idle", model, cfg, idleResult.Usage)
 
 	// Emit SSE event
 	now := time.Now().UTC()
@@ -728,6 +769,12 @@ If seriously off track: {"should_respond": true, "message": "Stop — [what's wr
 		return ""
 	}
 
+	cfg := config.Load()
+	if capReached, usage := evaluatorSpendCapReached(cfg); capReached {
+		slog.Warn("Interrogation skipped: spend cap reached", "spent", usage.EstimatedCostUSD, "cap", cfg.General.MonthlySpendCapUSD)
+		return ""
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), s.evalTimeout)
 	defer cancel()
 
@@ -736,6 +783,7 @@ If seriously off track: {"should_respond": true, "message": "Stop — [what's wr
 		slog.Warn("Interrogation API error — letting tool through (approval already passed)", "error", err)
 		return ""
 	}
+	recordEvaluatorUsage("interrogate", s.interrogationModel, cfg, rawResult.Usage)
 
 	// should_respond=true means Claude is off track and needs redirecting
 	if rawResult.ShouldRespond && rawResult.Message != "" && rawResult.Confidence >= s.interrogationConfidence {
@@ -759,6 +807,42 @@ If seriously off track: {"should_respond": true, "message": "Stop — [what's wr
 	}
 
 	return ""
+}
+
+func evaluatorSpendCapReached(cfg *config.PilotConfig) (bool, state.MonthlyUsage) {
+	usage := state.ReadMonthlyUsage(time.Now())
+	capUSD := cfg.General.MonthlySpendCapUSD
+	return capUSD > 0 && usage.EstimatedCostUSD >= capUSD, usage
+}
+
+func recordEvaluatorUsage(kind, model string, cfg *config.PilotConfig, usage anthropic.Usage) {
+	if usage.InputTokens <= 0 && usage.OutputTokens <= 0 {
+		return
+	}
+	costUSD := estimateUsageCostUSD(cfg, usage)
+	if err := state.RecordUsage(state.UsageRecord{
+		Timestamp:        time.Now().UTC(),
+		Kind:             kind,
+		Model:            model,
+		InputTokens:      uint64(max(usage.InputTokens, 0)),
+		OutputTokens:     uint64(max(usage.OutputTokens, 0)),
+		EstimatedCostUSD: costUSD,
+	}); err != nil {
+		slog.Warn("Failed to record Anthropic usage", "error", err, "kind", kind, "model", model)
+	}
+}
+
+func estimateUsageCostUSD(cfg *config.PilotConfig, usage anthropic.Usage) float64 {
+	inputCost := cfg.General.InputCostPerMTokUSD
+	if inputCost <= 0 {
+		inputCost = config.DefaultInputCostPerMTokUSD
+	}
+	outputCost := cfg.General.OutputCostPerMTokUSD
+	if outputCost <= 0 {
+		outputCost = config.DefaultOutputCostPerMTokUSD
+	}
+	return (float64(max(usage.InputTokens, 0))/1_000_000)*inputCost +
+		(float64(max(usage.OutputTokens, 0))/1_000_000)*outputCost
 }
 
 // transcriptReadLimit caps how much of the transcript file we read into memory.

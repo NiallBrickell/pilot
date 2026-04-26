@@ -9,6 +9,15 @@ export interface PilotStatus {
   wrapper_running: boolean;
   sse_available: boolean;
   sse_port: number;
+  monthly_usage: MonthlyUsage;
+  monthly_spend_cap_usd: number;
+}
+
+export interface MonthlyUsage {
+  period: string;
+  input_tokens: number;
+  output_tokens: number;
+  estimated_cost_usd: number;
 }
 
 export interface PilotStats {
@@ -40,6 +49,9 @@ export interface PilotConfig {
     sse_port: number;
     max_concurrent_evals: number;
     evaluator_timeout_ms: number;
+    monthly_spend_cap_usd: number;
+    input_cost_per_mtok_usd: number;
+    output_cost_per_mtok_usd: number;
     interrogation_confidence: number;
   };
   prompts: {

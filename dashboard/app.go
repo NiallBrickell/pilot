@@ -84,6 +84,15 @@ func (a *App) GetPilotStatus() pilot.PilotStatus {
 			AutoResponsesSkipped: uint64Val(statsVal, "auto_responses_skipped"),
 		}
 	}
+	if usageVal, ok := state["monthly_usage"].(map[string]any); ok {
+		status.MonthlyUsage = pilot.MonthlyUsage{
+			Period:           strVal(usageVal, "period"),
+			InputTokens:      uint64Val(usageVal, "input_tokens"),
+			OutputTokens:     uint64Val(usageVal, "output_tokens"),
+			EstimatedCostUSD: floatVal(usageVal, "estimated_cost_usd"),
+		}
+	}
+	status.MonthlySpendCapUSD = floatVal(state, "monthly_spend_cap_usd")
 
 	if arr, ok := state["recent_actions"].([]any); ok {
 		limit := len(arr)
@@ -224,6 +233,16 @@ func uint64Val(m map[string]any, key string) uint64 {
 	}
 	if v, ok := m[key].(float64); ok {
 		return uint64(v)
+	}
+	return 0
+}
+
+func floatVal(m map[string]any, key string) float64 {
+	if m == nil {
+		return 0
+	}
+	if v, ok := m[key].(float64); ok {
+		return v
 	}
 	return 0
 }

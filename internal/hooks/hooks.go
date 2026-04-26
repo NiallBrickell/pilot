@@ -166,20 +166,10 @@ func InstallCodex(pilotBin string) error {
 		hooks = make(map[string]any)
 	}
 
-	// Codex PreToolUse can only block. `codex-approve` is used here as an
-	// early guardrail; normal auto-approval happens in PermissionRequest.
+	// Codex PreToolUse can only block. Keep it for trajectory checks only;
+	// approval evaluation belongs in PermissionRequest so routine Bash calls
+	// don't hit the LLM before Codex has decided an approval is needed.
 	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"],
-		map[string]any{
-			"matcher": "^(Bash|apply_patch|Edit|Write|mcp__.*)$",
-			"hooks": []any{
-				map[string]any{
-					"type":          "command",
-					"command":       pilotBin + " codex-approve",
-					"timeout":       90,
-					"statusMessage": "Pilot checking tool use",
-				},
-			},
-		},
 		map[string]any{
 			"matcher": ".*",
 			"hooks": []any{

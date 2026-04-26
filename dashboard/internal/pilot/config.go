@@ -22,6 +22,9 @@ type PilotGeneralConfig struct {
 	SSEPort                 int     `json:"sse_port" toml:"sse_port"`
 	MaxConcurrentEvals      int     `json:"max_concurrent_evals" toml:"max_concurrent_evals"`
 	EvaluatorTimeoutMs      int     `json:"evaluator_timeout_ms" toml:"evaluator_timeout_ms"`
+	MonthlySpendCapUSD      float64 `json:"monthly_spend_cap_usd" toml:"monthly_spend_cap_usd"`
+	InputCostPerMTokUSD     float64 `json:"input_cost_per_mtok_usd" toml:"input_cost_per_mtok_usd"`
+	OutputCostPerMTokUSD    float64 `json:"output_cost_per_mtok_usd" toml:"output_cost_per_mtok_usd"`
 	InterrogationConfidence float64 `json:"interrogation_confidence" toml:"interrogation_confidence"`
 }
 
@@ -36,7 +39,21 @@ func pilotConfigPath() string {
 
 func ReadPilotConfig() (PilotConfig, error) {
 	var cfg PilotConfig
-	_, err := toml.DecodeFile(pilotConfigPath(), &cfg)
+	md, err := toml.DecodeFile(pilotConfigPath(), &cfg)
+	if err == nil {
+		if cfg.General.Model == "" || cfg.General.Model == "haiku" {
+			cfg.General.Model = "claude-haiku-4-5"
+		}
+		if !md.IsDefined("general", "monthly_spend_cap_usd") {
+			cfg.General.MonthlySpendCapUSD = 20.0
+		}
+		if !md.IsDefined("general", "input_cost_per_mtok_usd") || cfg.General.InputCostPerMTokUSD <= 0 {
+			cfg.General.InputCostPerMTokUSD = 1.0
+		}
+		if !md.IsDefined("general", "output_cost_per_mtok_usd") || cfg.General.OutputCostPerMTokUSD <= 0 {
+			cfg.General.OutputCostPerMTokUSD = 5.0
+		}
+	}
 	return cfg, err
 }
 

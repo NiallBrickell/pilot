@@ -279,6 +279,76 @@ export function PilotConfigPage() {
                 className="input-field"
               />
             </Field>
+
+            <Field
+              label="Monthly Spend Cap (USD)"
+              hint="Anthropic evaluator cap for the current calendar month. 0 disables it."
+            >
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={config.general.monthly_spend_cap_usd}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    general: {
+                      ...config.general,
+                      monthly_spend_cap_usd: parseFloat(e.target.value) || 0,
+                    },
+                  })
+                }
+                className="input-field"
+              />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field
+                label="Input $/MTok"
+                hint="Cost estimate for evaluator input tokens."
+              >
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={config.general.input_cost_per_mtok_usd}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      general: {
+                        ...config.general,
+                        input_cost_per_mtok_usd:
+                          parseFloat(e.target.value) || 0,
+                      },
+                    })
+                  }
+                  className="input-field"
+                />
+              </Field>
+
+              <Field
+                label="Output $/MTok"
+                hint="Cost estimate for evaluator output tokens."
+              >
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={config.general.output_cost_per_mtok_usd}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      general: {
+                        ...config.general,
+                        output_cost_per_mtok_usd:
+                          parseFloat(e.target.value) || 0,
+                      },
+                    })
+                  }
+                  className="input-field"
+                />
+              </Field>
+            </div>
           </div>
         </section>
 

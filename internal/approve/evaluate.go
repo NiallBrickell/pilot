@@ -15,7 +15,7 @@ import (
 type Decision struct {
 	Action string // "passthrough", "approve", "deny"
 	Reason string
-	Source string // "claude_settings", "pilot_rules", "haiku"
+	Source string // "claude_settings", "codex_settings", "pilot_rules", "haiku"
 }
 
 // Evaluate runs the tool call through the approval hierarchy.
@@ -42,6 +42,21 @@ func EvaluateForRuntime(cfg *config.PilotConfig, runtime, toolName, toolInput, c
 				Action: action,
 				Reason: "matched Claude Code settings",
 				Source: "claude_settings",
+			}
+		}
+	}
+
+	if runtime == "codex" {
+		// Layer 1: Codex local trust/config
+		if result := CheckCodexSettings(toolName, parsed, toolInput, cwd); result != "" {
+			action := "passthrough"
+			if result == "deny" {
+				action = "deny"
+			}
+			return &Decision{
+				Action: action,
+				Reason: "matched Codex settings",
+				Source: "codex_settings",
 			}
 		}
 	}

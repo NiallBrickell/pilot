@@ -3,7 +3,7 @@
 
 [general]
 # Model for evaluations (uses Anthropic API directly)
-model = "haiku"
+model = "claude-haiku-4-5"
 # Confidence threshold for auto-responding to idle pauses (0.0 - 1.0)
 confidence_threshold = 0.8
 # How long to wait after output stops before checking for idle (ms)
@@ -16,6 +16,11 @@ sse_port = 9721
 max_concurrent_evals = 4
 # Evaluator call timeout in milliseconds
 evaluator_timeout_ms = 15000
+# Monthly Anthropic evaluator spend cap in USD. Set to 0 to disable.
+monthly_spend_cap_usd = 20.0
+# Pricing used for local cost estimates, in USD per million tokens.
+input_cost_per_mtok_usd = 1.0
+output_cost_per_mtok_usd = 5.0
 # Confidence threshold for interrogation redirects (0.0 - 1.0)
 interrogation_confidence = 0.7
 # Grace period before auto-approvals take effect (0 = instant)

@@ -53,6 +53,22 @@ type PilotAction struct {
 	SessionID  string     `json:"session_id,omitempty"`
 }
 
+type UsageRecord struct {
+	Timestamp        time.Time `json:"timestamp"`
+	Kind             string    `json:"kind"`
+	Model            string    `json:"model"`
+	InputTokens      uint64    `json:"input_tokens"`
+	OutputTokens     uint64    `json:"output_tokens"`
+	EstimatedCostUSD float64   `json:"estimated_cost_usd"`
+}
+
+type MonthlyUsage struct {
+	Period           string  `json:"period"`
+	InputTokens      uint64  `json:"input_tokens"`
+	OutputTokens     uint64  `json:"output_tokens"`
+	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
+}
+
 var (
 	db     *sql.DB
 	dbOnce sync.Once
@@ -106,6 +122,18 @@ func getDB() *sql.DB {
 		)`)
 
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs (timestamp DESC)`)
+
+		db.Exec(`CREATE TABLE IF NOT EXISTS api_usage (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			model TEXT NOT NULL,
+			input_tokens INTEGER NOT NULL,
+			output_tokens INTEGER NOT NULL,
+			estimated_cost_usd REAL NOT NULL
+		)`)
+
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_api_usage_timestamp ON api_usage (timestamp DESC)`)
 
 		// Ensure stat rows exist
 		for _, key := range []string{"approvals_auto", "approvals_escalated", "auto_responses", "auto_responses_skipped"} {
@@ -165,6 +193,50 @@ func RecordAction(action PilotAction) error {
 	}
 
 	return nil
+}
+
+func RecordUsage(record UsageRecord) error {
+	db := getDB()
+	if record.Timestamp.IsZero() {
+		record.Timestamp = time.Now().UTC()
+	}
+	_, err := db.Exec(
+		`INSERT INTO api_usage (timestamp, kind, model, input_tokens, output_tokens, estimated_cost_usd)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		record.Timestamp.UTC().Format(time.RFC3339Nano),
+		record.Kind,
+		record.Model,
+		record.InputTokens,
+		record.OutputTokens,
+		record.EstimatedCostUSD,
+	)
+	return err
+}
+
+func ReadMonthlyUsage(now time.Time) MonthlyUsage {
+	db := getDB()
+	utc := now.UTC()
+	start := time.Date(utc.Year(), utc.Month(), 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 1, 0)
+
+	usage := MonthlyUsage{Period: start.Format("2006-01")}
+	var inputTokens, outputTokens int64
+	_ = db.QueryRow(`
+		SELECT
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(estimated_cost_usd), 0)
+		FROM api_usage
+		WHERE timestamp >= ? AND timestamp < ?
+	`, start.Format(time.RFC3339Nano), end.Format(time.RFC3339Nano)).
+		Scan(&inputTokens, &outputTokens, &usage.EstimatedCostUSD)
+	if inputTokens > 0 {
+		usage.InputTokens = uint64(inputTokens)
+	}
+	if outputTokens > 0 {
+		usage.OutputTokens = uint64(outputTokens)
+	}
+	return usage
 }
 
 func ReadState() (PilotState, error) {

@@ -232,6 +232,12 @@ export function PilotStatusWidget() {
               <span className="text-info">&#x27A4;</span>{" "}
               {status.stats.auto_responses}
             </span>
+            {status.monthly_spend_cap_usd > 0 && (
+              <span title="Monthly Anthropic evaluator spend">
+                ${(status.monthly_usage?.estimated_cost_usd ?? 0).toFixed(2)} / $
+                {status.monthly_spend_cap_usd.toFixed(0)}
+              </span>
+            )}
             <button
               onClick={() => navigate("/settings")}
               className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground rounded hover:bg-muted/50 transition-colors"

@@ -33,6 +33,7 @@ const (
 type ApprovalResult struct {
 	Decision ApprovalDecision
 	Reason   string
+	Usage    Usage
 }
 
 // IdleResult is the structured output from an idle/interrogation evaluation.
@@ -41,6 +42,12 @@ type IdleResult struct {
 	Message       string  `json:"message"`
 	Confidence    float64 `json:"confidence"`
 	Reasoning     string  `json:"reasoning"`
+	Usage         Usage   `json:"-"`
+}
+
+type Usage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 // ResolveAPIKey returns the Anthropic API key from the environment or from
@@ -74,7 +81,7 @@ func (c *Client) EvaluateApproval(ctx context.Context, systemPrompt, toolName, t
 	}
 	userContent := fmt.Sprintf("Tool: %s\nInput: %s", toolName, truncate(toolInput, 2000))
 
-	raw, err := c.call(ctx, model, systemPrompt, userContent, approvalSchema)
+	raw, usage, err := c.call(ctx, model, systemPrompt, userContent, approvalSchema)
 	if err != nil {
 		slog.Warn("Anthropic API error (approval)", "error", err)
 		return &ApprovalResult{Decision: Deny, Reason: fmt.Sprintf("error: %v", err)}, nil
@@ -85,14 +92,14 @@ func (c *Client) EvaluateApproval(ctx context.Context, systemPrompt, toolName, t
 		Reason   string `json:"reason"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return &ApprovalResult{Decision: Deny, Reason: fmt.Sprintf("parse error: %v", err)}, nil
+		return &ApprovalResult{Decision: Deny, Reason: fmt.Sprintf("parse error: %v", err), Usage: usage}, nil
 	}
 
 	decision := Deny
 	if parsed.Decision == "approve" {
 		decision = Approve
 	}
-	return &ApprovalResult{Decision: decision, Reason: parsed.Reason}, nil
+	return &ApprovalResult{Decision: decision, Reason: parsed.Reason, Usage: usage}, nil
 }
 
 // EvaluateIdle asks the model whether Claude's pause needs an auto-response.
@@ -102,7 +109,7 @@ func (c *Client) EvaluateIdle(ctx context.Context, systemPrompt, transcriptConte
 	}
 	userContent := "Here is the recent Claude Code conversation. Claude has stopped. Should I auto-respond?\n\n---\n" + truncate(transcriptContext, 4000)
 
-	raw, err := c.call(ctx, model, systemPrompt, userContent, idleSchema)
+	raw, usage, err := c.call(ctx, model, systemPrompt, userContent, idleSchema)
 	if err != nil {
 		slog.Warn("Anthropic API error (idle)", "error", err)
 		return &IdleResult{ShouldRespond: false, Confidence: 0, Reasoning: fmt.Sprintf("error: %v", err)}, nil
@@ -110,13 +117,14 @@ func (c *Client) EvaluateIdle(ctx context.Context, systemPrompt, transcriptConte
 
 	var result IdleResult
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return &IdleResult{ShouldRespond: false, Confidence: 0, Reasoning: fmt.Sprintf("parse error: %v", err)}, nil
+		return &IdleResult{ShouldRespond: false, Confidence: 0, Reasoning: fmt.Sprintf("parse error: %v", err), Usage: usage}, nil
 	}
+	result.Usage = usage
 	return &result, nil
 }
 
 // call sends a single messages.create request and returns the raw JSON text content.
-func (c *Client) call(ctx context.Context, model, systemPrompt, userContent string, schema map[string]any) (json.RawMessage, error) {
+func (c *Client) call(ctx context.Context, model, systemPrompt, userContent string, schema map[string]any) (json.RawMessage, Usage, error) {
 	body := map[string]any{
 		"model":      model,
 		"max_tokens": 512,
@@ -129,12 +137,12 @@ func (c *Client) call(ctx context.Context, model, systemPrompt, userContent stri
 
 	reqBody, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return nil, Usage{}, fmt.Errorf("marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, Usage{}, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("x-api-key", c.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
@@ -142,17 +150,17 @@ func (c *Client) call(ctx context.Context, model, systemPrompt, userContent stri
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("API call failed: %w", err)
+		return nil, Usage{}, fmt.Errorf("API call failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, Usage{}, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, truncate(string(respBody), 500))
+		return nil, Usage{}, fmt.Errorf("API returned %d: %s", resp.StatusCode, truncate(string(respBody), 500))
 	}
 
 	var apiResp struct {
@@ -160,22 +168,23 @@ func (c *Client) call(ctx context.Context, model, systemPrompt, userContent stri
 			Type string          `json:"type"`
 			Text json.RawMessage `json:"text"`
 		} `json:"content"`
+		Usage Usage `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return nil, fmt.Errorf("parse API response: %w", err)
+		return nil, Usage{}, fmt.Errorf("parse API response: %w", err)
 	}
 
 	if len(apiResp.Content) == 0 {
-		return nil, fmt.Errorf("empty content in API response")
+		return nil, apiResp.Usage, fmt.Errorf("empty content in API response")
 	}
 
 	// The text field is a JSON string — we need to unquote it first.
 	var textStr string
 	if err := json.Unmarshal(apiResp.Content[0].Text, &textStr); err != nil {
 		// It might already be raw JSON (not quoted), try using it directly
-		return apiResp.Content[0].Text, nil
+		return apiResp.Content[0].Text, apiResp.Usage, nil
 	}
-	return json.RawMessage(textStr), nil
+	return json.RawMessage(textStr), apiResp.Usage, nil
 }
 
 // Schemas for structured output.

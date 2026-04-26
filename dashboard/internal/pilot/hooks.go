@@ -135,12 +135,6 @@ func installCodexHooks(bin string) error {
 
 	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"],
 		map[string]any{
-			"matcher": "^(Bash|apply_patch|Edit|Write|mcp__.*)$",
-			"hooks": []any{
-				map[string]any{"type": "command", "command": bin + " codex-approve", "timeout": 90, "statusMessage": "Pilot checking tool use"},
-			},
-		},
-		map[string]any{
 			"matcher": ".*",
 			"hooks": []any{
 				map[string]any{"type": "command", "command": bin + " codex-interrogate", "timeout": 90, "statusMessage": "Pilot checking trajectory"},
