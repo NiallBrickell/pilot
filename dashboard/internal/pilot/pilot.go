@@ -2,6 +2,7 @@ package pilot
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,18 +101,34 @@ func StartServe() error {
 		return err
 	}
 
+	logPath := filepath.Join(pilotDir(), "pilot-serve.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open pilot serve log: %w", err)
+	}
+
 	cmd := exec.Command(bin, "serve")
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
+		logFile.Close()
 		return fmt.Errorf("failed to start pilot serve: %w", err)
 	}
 
 	pidPath := filepath.Join(pilotDir(), "pilot-serve.pid")
 	os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644)
-	go cmd.Wait()
+	go func() {
+		_ = cmd.Wait()
+		_ = logFile.Close()
+	}()
+
+	port := readSSEPort()
+	if err := waitForServe(port, 3*time.Second); err != nil {
+		logData, _ := os.ReadFile(logPath)
+		return fmt.Errorf("pilot serve failed to start: %w\n\nServer log:\n%s", err, string(logData))
+	}
 
 	return nil
 }
@@ -122,8 +139,25 @@ func StopServe() error {
 	pidPath := filepath.Join(pilotDir(), "pilot-serve.pid")
 	_ = stopPid(pidPath)
 	// Fallback: kill anything on our port in case pid file was stale
-	killPort(9721)
+	killPort(readSSEPort())
 	return nil
+}
+
+func waitForServe(port int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: 200 * time.Millisecond}
+	url := fmt.Sprintf("http://localhost:%d/status", port)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("server did not respond on port %d within %s", port, timeout)
 }
 
 func killPort(port int) {

@@ -66,6 +66,8 @@ When a hook fires, `pilot approve` or `pilot codex-approve` POSTs to `pilot serv
 2. **Pilot rules** — fast pattern matching without LLM (extension point).
 3. **Haiku evaluation** — calls the Anthropic API directly with structured JSON output.
 
+If Codex still shows its own approval prompt for a command that Pilot should handle, first check `./pilot status` or `curl http://localhost:9721/status`. Pilot's Codex hook handlers fail open when `pilot serve` is unreachable, so a normal Codex prompt usually means the server is down or no decision was returned before Codex asked you.
+
 ### Idle detection
 
 The `Stop` hook fires when the agent stops. `pilot on-stop` or `pilot codex-on-stop` reads the transcript, builds a structured conversation summary, and asks Haiku whether the agent should keep going.
