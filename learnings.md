@@ -93,3 +93,9 @@ Fix: the prompt now says "MOST RECENT messages are the current task". Only flag 
 External apps (like acme-development dashboard) integrate via webhooks, not direct code imports. Pilot POSTs events to configured HTTP endpoints. The external app receives them and feeds to its own UI.
 
 This is cleaner than the original approach of embedding pilot code in the dashboard. The dashboard just needs a webhook receiver endpoint and a way to approve/reject via `POST /approve/{id}` and `POST /reject/{id}` on pilot serve.
+
+## Codex hook model
+
+Codex hooks are close to Claude Code hooks, but the approval semantics differ. `PreToolUse` is only useful as an early block/redirect guardrail; it cannot auto-approve or ask the user. Real auto-approval belongs in `PermissionRequest`, where Pilot can return an allow/deny decision. On dashboard timeout, Codex `PermissionRequest` should decline to decide so Codex falls back to its normal approval flow; `PreToolUse` should fail open unless a human explicitly rejects.
+
+Codex transcripts are also a different JSONL envelope (`payload.type`, `payload.message`, `response_item` message content), so transcript parsing needs runtime-neutral extraction rather than assuming Claude's `message.role/content` shape.

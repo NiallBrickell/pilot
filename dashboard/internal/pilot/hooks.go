@@ -17,24 +17,48 @@ func claudeSettingsPath() string {
 	return filepath.Join(home, ".claude", "settings.json")
 }
 
+func codexHooksPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".codex", "hooks.json")
+}
+
+func codexConfigPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".codex", "config.toml")
+}
+
 func CheckHooksInstalled() HookStatus {
-	path := claudeSettingsPath()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return HookStatus{Installed: false, SettingsPath: path}
+	claudePath := claudeSettingsPath()
+	codexPath := codexHooksPath()
+	installed := false
+	if data, err := os.ReadFile(claudePath); err == nil {
+		content := string(data)
+		installed = installed || (strings.Contains(content, "pilot approve") &&
+			strings.Contains(content, "pilot interrogate") &&
+			strings.Contains(content, "pilot on-stop"))
 	}
-	// Check for pilot hooks regardless of binary path
-	content := string(data)
-	installed := strings.Contains(content, "pilot approve") && strings.Contains(content, "pilot interrogate")
-	return HookStatus{Installed: installed, SettingsPath: path}
+	if data, err := os.ReadFile(codexPath); err == nil {
+		content := string(data)
+		installed = installed || (strings.Contains(content, "pilot codex-approve") &&
+			strings.Contains(content, "pilot codex-interrogate") &&
+			strings.Contains(content, "pilot codex-on-stop"))
+	}
+	return HookStatus{Installed: installed, SettingsPath: claudePath + " / " + codexPath}
 }
 
 func InstallHooks() error {
-	path := claudeSettingsPath()
 	bin, err := FindPilotBinary()
 	if err != nil {
 		return err
 	}
+	if err := installClaudeHooks(bin); err != nil {
+		return err
+	}
+	return installCodexHooks(bin)
+}
+
+func installClaudeHooks(bin string) error {
+	path := claudeSettingsPath()
 
 	settings := make(map[string]any)
 	if data, err := os.ReadFile(path); err == nil {
@@ -93,9 +117,71 @@ func InstallHooks() error {
 	return os.WriteFile(path, data, 0644)
 }
 
-func UninstallHooks() error {
-	path := claudeSettingsPath()
+func installCodexHooks(bin string) error {
+	if err := ensureCodexHooksFeature(codexConfigPath()); err != nil {
+		return err
+	}
 
+	path := codexHooksPath()
+	settings := make(map[string]any)
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &settings)
+	}
+
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = make(map[string]any)
+	}
+
+	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"],
+		map[string]any{
+			"matcher": "^(Bash|apply_patch|Edit|Write|mcp__.*)$",
+			"hooks": []any{
+				map[string]any{"type": "command", "command": bin + " codex-approve", "timeout": 90, "statusMessage": "Pilot checking tool use"},
+			},
+		},
+		map[string]any{
+			"matcher": ".*",
+			"hooks": []any{
+				map[string]any{"type": "command", "command": bin + " codex-interrogate", "timeout": 90, "statusMessage": "Pilot checking trajectory"},
+			},
+		},
+	)
+	hooks["PermissionRequest"] = mergeHookEntries(hooks["PermissionRequest"],
+		map[string]any{
+			"matcher": "^(Bash|apply_patch|Edit|Write|mcp__.*)$",
+			"hooks": []any{
+				map[string]any{"type": "command", "command": bin + " codex-approve", "timeout": 90, "statusMessage": "Pilot reviewing approval"},
+			},
+		},
+	)
+	hooks["Stop"] = mergeHookEntries(hooks["Stop"],
+		map[string]any{
+			"hooks": []any{
+				map[string]any{"type": "command", "command": bin + " codex-on-stop", "timeout": 30, "statusMessage": "Pilot checking whether to continue"},
+			},
+		},
+	)
+
+	settings["hooks"] = hooks
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+func UninstallHooks() error {
+	if err := uninstallHooksAtPath(claudeSettingsPath(), []string{"PreToolUse", "Stop"}); err != nil {
+		return err
+	}
+	return uninstallHooksAtPath(codexHooksPath(), []string{"PreToolUse", "PermissionRequest", "Stop"})
+}
+
+func uninstallHooksAtPath(path string, keys []string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -111,9 +197,9 @@ func UninstallHooks() error {
 		return nil
 	}
 
-	// Remove any entry containing "pilot approve" or "pilot on-stop"
-	removePilotEntries(hooks, "PreToolUse")
-	removePilotEntries(hooks, "Stop")
+	for _, key := range keys {
+		removePilotEntries(hooks, key)
+	}
 
 	if len(hooks) == 0 {
 		delete(settings, "hooks")
@@ -150,7 +236,10 @@ func mergeHookEntries(existing any, pilotEntries ...map[string]any) []any {
 func isPilotEntry(entryJSON string) bool {
 	return strings.Contains(entryJSON, "pilot approve") ||
 		strings.Contains(entryJSON, "pilot interrogate") ||
-		strings.Contains(entryJSON, "pilot on-stop")
+		strings.Contains(entryJSON, "pilot on-stop") ||
+		strings.Contains(entryJSON, "pilot codex-approve") ||
+		strings.Contains(entryJSON, "pilot codex-interrogate") ||
+		strings.Contains(entryJSON, "pilot codex-on-stop")
 }
 
 func removePilotEntries(hooks map[string]any, key string) {
@@ -170,4 +259,56 @@ func removePilotEntries(hooks map[string]any, key string) {
 	} else {
 		hooks[key] = filtered
 	}
+}
+
+func ensureCodexHooksFeature(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	content := string(data)
+	lines := strings.Split(content, "\n")
+	inFeatures := false
+	featuresSeen := false
+	codexHooksSeen := false
+	var out []string
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if inFeatures && !codexHooksSeen {
+				out = append(out, "codex_hooks = true")
+				codexHooksSeen = true
+			}
+			inFeatures = trimmed == "[features]"
+			if inFeatures {
+				featuresSeen = true
+			}
+		}
+		if inFeatures && strings.HasPrefix(trimmed, "codex_hooks") {
+			out = append(out, "codex_hooks = true")
+			codexHooksSeen = true
+			continue
+		}
+		if i == len(lines)-1 && trimmed == "" {
+			continue
+		}
+		out = append(out, line)
+	}
+
+	if inFeatures && !codexHooksSeen {
+		out = append(out, "codex_hooks = true")
+	}
+	if !featuresSeen {
+		if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
+			out = append(out, "")
+		}
+		out = append(out, "[features]", "codex_hooks = true")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(strings.Join(out, "\n")+"\n"), 0600)
 }

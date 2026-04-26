@@ -22,20 +22,17 @@ func init() {
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "interrogate",
 		Short: "Run as a Claude Code PreToolUse hook for interrogation (is Claude on track?)",
-		RunE:  runInterrogate,
+		RunE:  func(cmd *cobra.Command, args []string) error { return runInterrogateForRuntime(runtimeClaude) },
+	})
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "codex-interrogate",
+		Short: "Run as a Codex PreToolUse hook for interrogation (is Codex on track?)",
+		RunE:  func(cmd *cobra.Command, args []string) error { return runInterrogateForRuntime(runtimeCodex) },
 	})
 }
 
-func runInterrogate(cmd *cobra.Command, args []string) error {
+func runInterrogateForRuntime(runtime hookRuntime) error {
 	paths.EnsureSetup(config.EmbeddedConfig())
-	if !auth.IsClaudeAuthed() {
-		return printJSON(hookResponse{
-			HookSpecificOutput: preToolUseOutput{
-				HookEventName:      "PreToolUse",
-				PermissionDecision: "allow",
-			},
-		})
-	}
 
 	input, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -70,6 +67,9 @@ func runInterrogate(cmd *cobra.Command, args []string) error {
 		sessionCwd, _ = os.Getwd()
 	}
 	sessionID, _ := toolInfo["session_id"].(string)
+	if sessionID == "" {
+		sessionID, _ = toolInfo["turn_id"].(string)
+	}
 	transcriptPath, _ := toolInfo["transcript_path"].(string)
 
 	// Hash of last user message text to detect new user turns.
@@ -79,11 +79,23 @@ func runInterrogate(cmd *cobra.Command, args []string) error {
 		userMsgHash = lastUserMsgHash(transcriptPath)
 	}
 
+	if runtime == runtimeClaude && !auth.IsClaudeAuthed() {
+		return printJSON(hookResponse{
+			HookSpecificOutput: preToolUseOutput{
+				HookEventName:      "PreToolUse",
+				PermissionDecision: "allow",
+			},
+		})
+	}
+
 	cfg := config.Load()
 
 	result, ok := interrogateViaServer(cfg, toolName, toolInput, sessionCwd, sessionID, transcriptPath, userMsgHash)
 	if !ok {
 		// Serve not running — allow through silently
+		if runtime == runtimeCodex {
+			return nil
+		}
 		return printJSON(hookResponse{
 			HookSpecificOutput: preToolUseOutput{
 				HookEventName:      "PreToolUse",
@@ -103,6 +115,9 @@ func runInterrogate(cmd *cobra.Command, args []string) error {
 			Confidence: &confidence,
 		})
 		emitActionToSSE(cfg, time.Now().UTC(), "interrogate", detail, &confidence, toolName, toolInput, sessionCwd, sessionID)
+		if runtime == runtimeCodex {
+			return printCodexPreToolUseBlock(result.Reason)
+		}
 		return printJSON(hookResponse{
 			HookSpecificOutput: preToolUseOutput{
 				HookEventName:            "PreToolUse",
@@ -113,6 +128,9 @@ func runInterrogate(cmd *cobra.Command, args []string) error {
 	}
 
 	// On track — allow
+	if runtime == runtimeCodex {
+		return nil
+	}
 	return printJSON(hookResponse{
 		HookSpecificOutput: preToolUseOutput{
 			HookEventName:      "PreToolUse",

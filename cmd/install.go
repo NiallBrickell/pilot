@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/NiallBrickell/pilot/internal/anthropic"
 	"github.com/NiallBrickell/pilot/internal/config"
+	pilothooks "github.com/NiallBrickell/pilot/internal/hooks"
 	"github.com/NiallBrickell/pilot/internal/paths"
 	"github.com/spf13/cobra"
 )
@@ -47,8 +47,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("ANTHROPIC_API_KEY not set\n\nSet it in your shell or write it to %s, e.g.:\n  echo 'ANTHROPIC_API_KEY=sk-ant-...' > %s", paths.EnvFile(), paths.EnvFile())
 	}
 
-	// Install hooks into ~/.claude/settings.json
-	if err := installHooks(pilotBin); err != nil {
+	if err := pilothooks.InstallAll(pilotBin); err != nil {
 		return fmt.Errorf("failed to install hooks: %w", err)
 	}
 	fmt.Println("Hooks installed")
@@ -111,8 +110,7 @@ func waitForServe(port int, timeout time.Duration) error {
 }
 
 func runStop(cmd *cobra.Command, args []string) error {
-	// Remove hooks from ~/.claude/settings.json
-	if err := uninstallHooks(); err != nil {
+	if err := pilothooks.UninstallAll(); err != nil {
 		slog.Warn("Failed to remove hooks", "error", err)
 	} else {
 		fmt.Println("Hooks removed")
@@ -128,159 +126,12 @@ func runStop(cmd *cobra.Command, args []string) error {
 	exec.Command("pkill", "-f", "pilot approve").Run()
 	exec.Command("pkill", "-f", "pilot interrogate").Run()
 	exec.Command("pkill", "-f", "pilot on-stop").Run()
+	exec.Command("pkill", "-f", "pilot codex-approve").Run()
+	exec.Command("pkill", "-f", "pilot codex-interrogate").Run()
+	exec.Command("pkill", "-f", "pilot codex-on-stop").Run()
 
 	fmt.Println("Pilot stopped")
 	return nil
-}
-
-// --- hooks ---
-
-func claudeSettingsPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude", "settings.json")
-}
-
-func installHooks(pilotBin string) error {
-	path := claudeSettingsPath()
-
-	settings := make(map[string]any)
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &settings)
-	}
-
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks == nil {
-		hooks = make(map[string]any)
-	}
-
-	pilotPreToolUse := map[string]any{
-		"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch|Read|Grep|Glob|Agent)$",
-		"hooks": []any{
-			map[string]any{
-				"type":    "command",
-				"command": pilotBin + " approve",
-			},
-		},
-	}
-
-	pilotInterrogate := map[string]any{
-		"matcher": ".*",
-		"hooks": []any{
-			map[string]any{
-				"type":    "command",
-				"command": pilotBin + " interrogate",
-			},
-		},
-	}
-
-	pilotStop := map[string]any{
-		"hooks": []any{
-			map[string]any{
-				"type":    "command",
-				"command": pilotBin + " on-stop",
-			},
-		},
-	}
-
-	// For each hook type: keep existing non-pilot entries, replace/add pilot entries
-	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], pilotBin, pilotPreToolUse, pilotInterrogate)
-	hooks["Stop"] = mergeHookEntries(hooks["Stop"], pilotBin, pilotStop)
-
-	settings["hooks"] = hooks
-
-	data, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-
-	return os.WriteFile(path, data, 0644)
-}
-
-// mergeHookEntries keeps existing non-pilot hook entries and adds/replaces pilot entries.
-func mergeHookEntries(existing any, pilotBin string, pilotEntries ...map[string]any) []any {
-	var result []any
-
-	if arr, ok := existing.([]any); ok {
-		for _, entry := range arr {
-			entryJSON, _ := json.Marshal(entry)
-			if isPilotHookEntry(string(entryJSON)) {
-				continue // Replace any pre-existing pilot entry
-			}
-			result = append(result, entry)
-		}
-	}
-
-	for _, entry := range pilotEntries {
-		result = append(result, entry)
-	}
-	return result
-}
-
-// isPilotHookEntry returns true if a serialized hook entry references one of
-// pilot's subcommands, regardless of the binary path.
-func isPilotHookEntry(entryJSON string) bool {
-	return strings.Contains(entryJSON, "pilot approve") ||
-		strings.Contains(entryJSON, "pilot interrogate") ||
-		strings.Contains(entryJSON, "pilot on-stop")
-}
-
-func uninstallHooks() error {
-	path := claudeSettingsPath()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-
-	settings := make(map[string]any)
-	if err := json.Unmarshal(data, &settings); err != nil {
-		return err
-	}
-
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks == nil {
-		return nil
-	}
-
-	// Remove pilot entries from PreToolUse and Stop. Match by command name
-	// (pilot approve / interrogate / on-stop) rather than by binary path so
-	// we catch entries installed via a different path (e.g. ~/.pilot/pilot
-	// symlink vs the working-dir build).
-	for _, key := range []string{"PreToolUse", "Stop"} {
-		arr, ok := hooks[key].([]any)
-		if !ok {
-			continue
-		}
-		var filtered []any
-		for _, entry := range arr {
-			entryJSON, _ := json.Marshal(entry)
-			if !isPilotHookEntry(string(entryJSON)) {
-				filtered = append(filtered, entry)
-			}
-		}
-		if len(filtered) == 0 {
-			delete(hooks, key)
-		} else {
-			hooks[key] = filtered
-		}
-	}
-
-	if len(hooks) == 0 {
-		delete(settings, "hooks")
-	} else {
-		settings["hooks"] = hooks
-	}
-
-	out, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(path, out, 0644)
 }
 
 // --- process management ---

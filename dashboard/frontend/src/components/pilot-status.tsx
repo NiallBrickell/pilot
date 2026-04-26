@@ -263,8 +263,8 @@ export function PilotStatusWidget() {
           <div className="bg-background border border-border rounded-lg shadow-lg p-6 max-w-sm mx-4 space-y-4">
             <h2 className="text-lg font-semibold">Welcome to Pilot</h2>
             <p className="text-sm text-muted-foreground">
-              Pilot auto-approves safe Claude Code tool calls, escalates risky ones,
-              and nudges Claude when it stops too early. Enable it to install hooks
+              Pilot auto-approves safe Claude Code and Codex tool calls, escalates risky ones,
+              and nudges agents when they stop too early. Enable it to install hooks
               and start the server.
             </p>
             <div className="flex gap-2 justify-end">

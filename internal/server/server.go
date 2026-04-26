@@ -15,26 +15,28 @@ import (
 	"github.com/NiallBrickell/pilot/internal/anthropic"
 	"github.com/NiallBrickell/pilot/internal/approve"
 	"github.com/NiallBrickell/pilot/internal/config"
+	pilothooks "github.com/NiallBrickell/pilot/internal/hooks"
 	"github.com/NiallBrickell/pilot/internal/paths"
 	"github.com/NiallBrickell/pilot/internal/state"
+	pilottranscript "github.com/NiallBrickell/pilot/internal/transcript"
 
 	"github.com/google/uuid"
 )
 
 // Server is a lightweight HTTP server providing SSE events and grace-period control.
 type Server struct {
-	broker       *Broker
-	pending      *PendingStore
-	port         int
-	srv          *http.Server
-	evalSem      chan struct{} // semaphore to limit concurrent approval evaluations
-	idleSem      chan struct{} // separate semaphore for idle evals (won't block approvals)
-	toolCounts   sync.Map     // session_id → *toolCounter
-	ai           *anthropic.Client
-	evalTimeout  time.Duration
+	broker                  *Broker
+	pending                 *PendingStore
+	port                    int
+	srv                     *http.Server
+	evalSem                 chan struct{} // semaphore to limit concurrent approval evaluations
+	idleSem                 chan struct{} // separate semaphore for idle evals (won't block approvals)
+	toolCounts              sync.Map      // session_id → *toolCounter
+	ai                      *anthropic.Client
+	evalTimeout             time.Duration
 	interrogationConfidence float64
-	interrogationModel     string
-	interrogationEnabled   bool
+	interrogationModel      string
+	interrogationEnabled    bool
 }
 
 // toolCounter tracks tool calls per session for checkpoint logic.
@@ -104,8 +106,8 @@ func New(cfg *config.PilotConfig) *Server {
 		idleSem:                 make(chan struct{}, 2),
 		evalTimeout:             evalTimeout,
 		interrogationConfidence: interrogationConf,
-		interrogationModel:     interrogationModel,
-		interrogationEnabled:   interrogationEnabled,
+		interrogationModel:      interrogationModel,
+		interrogationEnabled:    interrogationEnabled,
 	}
 }
 
@@ -225,16 +227,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if hooks are installed
-	home, _ := os.UserHomeDir()
-	settingsData, _ := os.ReadFile(fmt.Sprintf("%s/.claude/settings.json", home))
-	hooksInstalled := strings.Contains(string(settingsData), "pilot approve")
+	hookStatus := pilothooks.CheckInstalled()
 
 	// Merge into response
 	raw, _ := json.Marshal(ps)
 	var result map[string]any
 	json.Unmarshal(raw, &result)
-	result["hooks_installed"] = hooksInstalled
+	result["hooks_installed"] = hookStatus.Installed
+	result["claude_hooks_installed"] = hookStatus.ClaudeInstalled
+	result["codex_hooks_installed"] = hookStatus.CodexInstalled
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
@@ -395,6 +396,7 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
+		Runtime        string `json:"runtime"`
 		ToolName       string `json:"tool_name"`
 		ToolInput      string `json:"tool_input"`
 		Cwd            string `json:"cwd"`
@@ -430,8 +432,8 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Layer 1 + 2: Check Claude settings and pilot rules before hitting LLM
-	if decision := approve.Evaluate(cfg, req.ToolName, req.ToolInput, req.Cwd); decision != nil {
+	// Layer 1 + 2: Check runtime settings and pilot rules before hitting LLM.
+	if decision := approve.EvaluateForRuntime(cfg, req.Runtime, req.ToolName, req.ToolInput, req.Cwd); decision != nil {
 		durationMs := float64(time.Since(evalStart).Microseconds()) / 1000.0
 		slog.Debug("Evaluate completed (local)", "tool", req.ToolName, "source", decision.Source, "duration_ms", durationMs)
 		w.Header().Set("Content-Type", "application/json")
@@ -680,7 +682,7 @@ func (s *Server) handleEvaluateIdle(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// interrogate reads the conversation context and checks if Claude is still
+// interrogate reads the conversation context and checks if the agent is still
 // on track. Returns a redirect message if off-track, empty string if fine.
 func (s *Server) interrogate(transcriptPath, toolName, toolInput, cwd string) string {
 	// Build conversation summary (reuse the same logic as on-stop)
@@ -696,23 +698,23 @@ func (s *Server) interrogate(transcriptPath, toolName, toolInput, cwd string) st
 		"recent_user_preview", truncateForInterrogate(summary[max(0, len(summary)-500):], 500),
 	)
 
-	systemPrompt := `You are a safety net for an AI coding assistant (Claude Code). You RARELY intervene.
+	systemPrompt := `You are a safety net for an AI coding assistant. You RARELY intervene.
 
-You'll see conversation context and the tool call Claude is about to make. Only flag SERIOUSLY off-track behaviour.
+You'll see conversation context and the tool call the assistant is about to make. Only flag SERIOUSLY off-track behaviour.
 
 INTERVENE (respond with should_respond: true) ONLY when:
-- Claude is completely ignoring what the user explicitly asked for
-- Claude is stuck in a loop doing the same thing repeatedly
-- Claude is working on something the user explicitly said NOT to do
-- Claude is making a fundamental architectural mistake the user already corrected
+- The assistant is completely ignoring what the user explicitly asked for
+- The assistant is stuck in a loop doing the same thing repeatedly
+- The assistant is working on something the user explicitly said NOT to do
+- The assistant is making a fundamental architectural mistake the user already corrected
 
 DO NOT INTERVENE for:
 - Normal implementation decisions (choosing an email address, picking a config value, etc.)
 - Minor deviations that are part of working toward the goal
-- Claude exploring or debugging before implementing
-- Claude doing things in a different order than you'd expect
+- The assistant exploring or debugging before implementing
+- The assistant doing things in a different order than you'd expect
 - Anything that's a reasonable interpretation of the user's request
-- Claude doing what the user asked, even if it looks risky (e.g. hardcoding test values, modifying production code for local testing) — if the user said to do it and Claude agreed, it's on track
+- The assistant doing what the user asked, even if it looks risky (e.g. hardcoding test values, modifying production code for local testing) — if the user said to do it and the assistant agreed, it's on track
 - Subagent exploration (Read, Grep, find commands to understand codebase)
 
 The bar for intervention is HIGH. If you're not 90%+ sure Claude is seriously off track, say it's on track.
@@ -799,12 +801,9 @@ func buildTranscriptSummary(path string) string {
 		if json.Unmarshal(line, &entry) != nil {
 			return true
 		}
-		msg, _ := entry["message"].(map[string]any)
-		if msg == nil {
-			return true
-		}
-		if role, _ := msg["role"].(string); role == "user" {
-			firstUser = extractText(msg)
+		msg, ok := pilottranscript.ParseLine(entry)
+		if ok && msg.Role == "user" {
+			firstUser = msg.Text
 			return firstUser == "" // stop if found
 		}
 		return true
@@ -828,23 +827,15 @@ func buildTranscriptSummary(path string) string {
 		if json.Unmarshal(line, &entry) != nil {
 			return true
 		}
-		entryType, _ := entry["type"].(string)
-		if entryType != "user" && entryType != "assistant" {
+		msg, ok := pilottranscript.ParseLine(entry)
+		if !ok {
 			return true
 		}
-		msg, _ := entry["message"].(map[string]any)
-		if msg == nil {
-			return true
-		}
-		text := extractText(msg)
-		if text == "" {
-			return true
-		}
-		switch entryType {
+		switch msg.Role {
 		case "user":
-			recentUser = append(recentUser, text)
+			recentUser = append(recentUser, msg.Text)
 		case "assistant":
-			recentAssistant = append(recentAssistant, text)
+			recentAssistant = append(recentAssistant, msg.Text)
 		}
 		return true
 	})
@@ -905,22 +896,6 @@ func forEachLine(data []byte, fn func(line []byte) bool) {
 	}
 }
 
-func extractText(msg map[string]any) string {
-	switch content := msg["content"].(type) {
-	case string:
-		return content
-	case []any:
-		for _, item := range content {
-			if m, ok := item.(map[string]any); ok {
-				if t, ok := m["text"].(string); ok && t != "" {
-					return t
-				}
-			}
-		}
-	}
-	return ""
-}
-
 func truncateForInterrogate(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -940,31 +915,7 @@ func (s *Server) handleHooksInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	home, _ := os.UserHomeDir()
-	settingsPath := fmt.Sprintf("%s/.claude/settings.json", home)
-
-	settings := make(map[string]any)
-	if data, err := os.ReadFile(settingsPath); err == nil {
-		_ = json.Unmarshal(data, &settings)
-	}
-
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks == nil {
-		hooks = make(map[string]any)
-	}
-
-	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], map[string]any{
-		"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch)$",
-		"hooks":   []any{map[string]any{"type": "command", "command": bin + " approve"}},
-	})
-	hooks["Stop"] = mergeHookEntries(hooks["Stop"], map[string]any{
-		"hooks": []any{map[string]any{"type": "command", "command": bin + " on-stop"}},
-	})
-
-	settings["hooks"] = hooks
-	data, _ := json.MarshalIndent(settings, "", "  ")
-	os.MkdirAll(fmt.Sprintf("%s/.claude", home), 0755)
-	if err := os.WriteFile(settingsPath, data, 0644); err != nil {
+	if err := pilothooks.InstallAll(bin); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -979,33 +930,10 @@ func (s *Server) handleHooksUninstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	home, _ := os.UserHomeDir()
-	settingsPath := fmt.Sprintf("%s/.claude/settings.json", home)
-
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "uninstalled"})
-		return
-	}
-
-	settings := make(map[string]any)
-	if err := json.Unmarshal(data, &settings); err != nil {
+	if err := pilothooks.UninstallAll(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks != nil {
-		removePilotHookEntries(hooks, "PreToolUse")
-		removePilotHookEntries(hooks, "Stop")
-		if len(hooks) == 0 {
-			delete(settings, "hooks")
-		}
-	}
-
-	out, _ := json.MarshalIndent(settings, "", "  ")
-	os.WriteFile(settingsPath, out, 0644)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "uninstalled"})
@@ -1057,39 +985,6 @@ func (s *Server) handleResetPrompts(w http.ResponseWriter, r *http.Request) {
 		"reason":      result.Reason,
 		"status":      status,
 	})
-}
-
-func mergeHookEntries(existing any, pilotEntry map[string]any) []any {
-	var result []any
-	if arr, ok := existing.([]any); ok {
-		for _, entry := range arr {
-			entryJSON, _ := json.Marshal(entry)
-			if !strings.Contains(string(entryJSON), "pilot approve") && !strings.Contains(string(entryJSON), "pilot on-stop") {
-				result = append(result, entry)
-			}
-		}
-	}
-	result = append(result, pilotEntry)
-	return result
-}
-
-func removePilotHookEntries(hooks map[string]any, key string) {
-	arr, ok := hooks[key].([]any)
-	if !ok {
-		return
-	}
-	var filtered []any
-	for _, entry := range arr {
-		entryJSON, _ := json.Marshal(entry)
-		if !strings.Contains(string(entryJSON), "pilot approve") && !strings.Contains(string(entryJSON), "pilot on-stop") {
-			filtered = append(filtered, entry)
-		}
-	}
-	if len(filtered) == 0 {
-		delete(hooks, key)
-	} else {
-		hooks[key] = filtered
-	}
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {

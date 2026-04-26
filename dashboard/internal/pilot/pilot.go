@@ -160,6 +160,9 @@ func KillLingering() error {
 	exec.Command("pkill", "-f", "pilot approve").Run()
 	exec.Command("pkill", "-f", "pilot interrogate").Run()
 	exec.Command("pkill", "-f", "pilot on-stop").Run()
+	exec.Command("pkill", "-f", "pilot codex-approve").Run()
+	exec.Command("pkill", "-f", "pilot codex-interrogate").Run()
+	exec.Command("pkill", "-f", "pilot codex-on-stop").Run()
 	return nil
 }
 

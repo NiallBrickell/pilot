@@ -6,7 +6,7 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:           "pilot",
-	Short:         "AI copilot for Claude Code sessions",
+	Short:         "AI copilot for Claude Code and Codex sessions",
 	SilenceUsage:  true,
 	SilenceErrors: false,
 }

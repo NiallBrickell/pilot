@@ -28,27 +28,29 @@ type preToolUseOutput struct {
 	PermissionDecisionReason *string `json:"permissionDecisionReason,omitempty"`
 }
 
+type hookRuntime string
+
+const (
+	runtimeClaude hookRuntime = "claude"
+	runtimeCodex  hookRuntime = "codex"
+)
+
 func init() {
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "approve",
 		Short: "Run as a Claude Code PreToolUse hook (reads tool info from stdin, returns approve/deny)",
-		RunE:  runApprove,
+		RunE:  func(cmd *cobra.Command, args []string) error { return runApproveForRuntime(runtimeClaude) },
+	})
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "codex-approve",
+		Short: "Run as a Codex PreToolUse or PermissionRequest hook",
+		RunE:  func(cmd *cobra.Command, args []string) error { return runApproveForRuntime(runtimeCodex) },
 	})
 }
 
-func runApprove(cmd *cobra.Command, args []string) error {
+func runApproveForRuntime(runtime hookRuntime) error {
 	cliStart := time.Now()
 	paths.EnsureSetup(config.EmbeddedConfig())
-	if !auth.IsClaudeAuthed() {
-		reason := "pilot: claude not authenticated, skipping"
-		return printJSON(hookResponse{
-			HookSpecificOutput: preToolUseOutput{
-				HookEventName:            "PreToolUse",
-				PermissionDecision:       "ask",
-				PermissionDecisionReason: &reason,
-			},
-		})
-	}
 
 	input, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -65,6 +67,10 @@ func runApprove(cmd *cobra.Command, args []string) error {
 	toolName, _ := toolInfo["tool_name"].(string)
 	if toolName == "" {
 		toolName = "unknown"
+	}
+	hookEventName, _ := toolInfo["hook_event_name"].(string)
+	if hookEventName == "" {
+		hookEventName, _ = toolInfo["hookEventName"].(string)
 	}
 
 	var toolInput string
@@ -83,6 +89,9 @@ func runApprove(cmd *cobra.Command, args []string) error {
 		sessionCwd, _ = os.Getwd()
 	}
 	sessionID, _ := toolInfo["session_id"].(string)
+	if sessionID == "" {
+		sessionID, _ = toolInfo["turn_id"].(string)
+	}
 	transcriptPath, _ := toolInfo["transcript_path"].(string)
 
 	// Hash of last user message text to detect new user turns for interrogation.
@@ -92,13 +101,28 @@ func runApprove(cmd *cobra.Command, args []string) error {
 		userMsgHash = lastUserMsgHash(transcriptPath)
 	}
 
+	if runtime == runtimeClaude && !auth.IsClaudeAuthed() {
+		reason := "pilot: claude not authenticated, skipping"
+		return printJSON(hookResponse{
+			HookSpecificOutput: preToolUseOutput{
+				HookEventName:            "PreToolUse",
+				PermissionDecision:       "ask",
+				PermissionDecisionReason: &reason,
+			},
+		})
+	}
+
 	cfg := config.Load()
 
 	// Evaluate via serve. If serve isn't running, fail open — pilot is
 	// effectively off, so the hook should be a silent no-op rather than
 	// forcing the user to approve every command.
-	result, ok := evaluateViaServer(cfg, toolName, toolInput, sessionCwd, sessionID, transcriptPath, userMsgHash)
+	result, ok := evaluateViaServer(cfg, runtime, toolName, toolInput, sessionCwd, sessionID, transcriptPath, userMsgHash)
 	if !ok {
+		if runtime == runtimeCodex {
+			slog.Debug("pilot: serve not running, leaving Codex hook undecided")
+			return nil
+		}
 		reason := "pilot: serve not running, allowing"
 		slog.Debug(reason)
 		return printJSON(hookResponse{
@@ -110,20 +134,21 @@ func runApprove(cmd *cobra.Command, args []string) error {
 		})
 	}
 
-	return handleEvalResult(cfg, result, toolName, toolInput, sessionCwd, sessionID, cliStart)
+	return handleEvalResult(cfg, runtime, hookEventName, result, toolName, toolInput, sessionCwd, sessionID, cliStart)
 }
 
 type evalResult struct {
 	Decision   string  `json:"decision"`
 	Reason     string  `json:"reason"`
 	Confidence float64 `json:"confidence"`
-	Source     string  `json:"source"`     // "settings", "pilot", "haiku", "interrogate"
+	Source     string  `json:"source"`      // "settings", "pilot", "haiku", "interrogate"
 	DurationMs float64 `json:"duration_ms"` // server-side eval time
 }
 
 // evaluateViaServer calls the pilot serve process to evaluate.
-func evaluateViaServer(cfg *config.PilotConfig, toolName, toolInput, cwd, sessionID, transcriptPath, userMsgHash string) (*evalResult, bool) {
+func evaluateViaServer(cfg *config.PilotConfig, runtime hookRuntime, toolName, toolInput, cwd, sessionID, transcriptPath, userMsgHash string) (*evalResult, bool) {
 	body, _ := json.Marshal(map[string]any{
+		"runtime":         string(runtime),
 		"tool_name":       toolName,
 		"tool_input":      toolInput,
 		"cwd":             cwd,
@@ -148,7 +173,11 @@ func evaluateViaServer(cfg *config.PilotConfig, toolName, toolInput, cwd, sessio
 }
 
 // handleEvalResult converts a server evaluation result into the hook response.
-func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, toolInput, cwd, sessionID string, cliStart time.Time) error {
+func handleEvalResult(cfg *config.PilotConfig, runtime hookRuntime, hookEventName string, result *evalResult, toolName, toolInput, cwd, sessionID string, cliStart time.Time) error {
+	if runtime == runtimeCodex {
+		return handleCodexEvalResult(cfg, hookEventName, result, toolName, toolInput, cwd, sessionID, cliStart)
+	}
+
 	roundTripMs := float64(time.Since(cliStart).Microseconds()) / 1000.0
 
 	if result.Decision == "passthrough" {
@@ -271,6 +300,136 @@ func handleEvalResult(cfg *config.PilotConfig, result *evalResult, toolName, too
 	})
 }
 
+func handleCodexEvalResult(cfg *config.PilotConfig, hookEventName string, result *evalResult, toolName, toolInput, cwd, sessionID string, cliStart time.Time) error {
+	if hookEventName == "PermissionRequest" {
+		return handleCodexPermissionRequestResult(cfg, result, toolName, toolInput, cwd, sessionID, cliStart)
+	}
+	return handleCodexPreToolUseResult(cfg, result, toolName, toolInput, cwd, sessionID, cliStart)
+}
+
+func handleCodexPreToolUseResult(cfg *config.PilotConfig, result *evalResult, toolName, toolInput, cwd, sessionID string, cliStart time.Time) error {
+	roundTripMs := float64(time.Since(cliStart).Microseconds()) / 1000.0
+	if result.Decision == "approve" || result.Decision == "passthrough" || result.Decision == "ask" {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	confidence := 0.0
+	outcome := requestDashboardDecision(cfg, toolName, toolInput, result.Reason, result.Source, confidence, cfg.General.EscalationTimeoutS)
+	if outcome == "human_approved" {
+		confidence = 1.0
+		_ = state.RecordAction(state.PilotAction{
+			Timestamp:  now,
+			ActionType: state.AutoApprove,
+			Detail:     fmt.Sprintf("%s — approved by human before Codex tool use", toolSummary(toolName, toolInput)),
+			Confidence: &confidence,
+			DurationMs: &roundTripMs,
+			Source:     result.Source,
+		})
+		return nil
+	}
+
+	detail := fmt.Sprintf("%s — flagged before Codex tool use: %s [%s]", toolSummary(toolName, toolInput), result.Reason, outcome)
+	_ = state.RecordAction(state.PilotAction{
+		Timestamp:  now,
+		ActionType: state.Escalate,
+		Detail:     detail,
+		Confidence: &confidence,
+		DurationMs: &roundTripMs,
+		Source:     result.Source,
+	})
+
+	if outcome == "human_rejected" {
+		return printCodexPreToolUseBlock("pilot: human rejected this tool use")
+	}
+
+	// PreToolUse cannot ask. On timeout, fail open and let Codex continue or
+	// reach its normal PermissionRequest flow if the tool needs approval.
+	return nil
+}
+
+func handleCodexPermissionRequestResult(cfg *config.PilotConfig, result *evalResult, toolName, toolInput, cwd, sessionID string, cliStart time.Time) error {
+	roundTripMs := float64(time.Since(cliStart).Microseconds()) / 1000.0
+
+	if result.Decision == "ask" {
+		return nil
+	}
+
+	if result.Decision == "approve" || result.Decision == "passthrough" {
+		confidence := 1.0
+		_ = state.RecordAction(state.PilotAction{
+			Timestamp:  time.Now().UTC(),
+			ActionType: state.AutoApprove,
+			Detail:     fmt.Sprintf("%s: %s", toolName, result.Reason),
+			Confidence: &confidence,
+			DurationMs: &roundTripMs,
+			Source:     result.Source,
+		})
+		return printCodexPermissionDecision("allow", "")
+	}
+
+	confidence := 0.0
+	outcome := requestDashboardDecision(cfg, toolName, toolInput, result.Reason, result.Source, confidence, cfg.General.EscalationTimeoutS)
+	now := time.Now().UTC()
+	if outcome == "human_approved" {
+		confidence = 1.0
+		_ = state.RecordAction(state.PilotAction{
+			Timestamp:  now,
+			ActionType: state.AutoApprove,
+			Detail:     fmt.Sprintf("%s — %s [dashboard]", toolSummary(toolName, toolInput), result.Reason),
+			Confidence: &confidence,
+			DurationMs: &roundTripMs,
+			Source:     result.Source,
+		})
+		return printCodexPermissionDecision("allow", "")
+	}
+	if outcome == "human_rejected" {
+		_ = state.RecordAction(state.PilotAction{
+			Timestamp:  now,
+			ActionType: state.Escalate,
+			Detail:     fmt.Sprintf("%s — rejected by human: %s", toolSummary(toolName, toolInput), result.Reason),
+			Confidence: &confidence,
+			DurationMs: &roundTripMs,
+			Source:     result.Source,
+		})
+		return printCodexPermissionDecision("deny", "pilot: human rejected this approval request")
+	}
+
+	// Let Codex show its normal approval prompt on timeout or dashboard errors.
+	_ = state.RecordAction(state.PilotAction{
+		Timestamp:  now,
+		ActionType: state.Escalate,
+		Detail:     fmt.Sprintf("%s — %s [%s]", toolSummary(toolName, toolInput), result.Reason, outcome),
+		Confidence: &confidence,
+		DurationMs: &roundTripMs,
+		Source:     result.Source,
+	})
+	return nil
+}
+
+func printCodexPreToolUseBlock(reason string) error {
+	return printJSON(map[string]any{
+		"hookSpecificOutput": map[string]any{
+			"hookEventName":            "PreToolUse",
+			"permissionDecision":       "deny",
+			"permissionDecisionReason": reason,
+		},
+	})
+}
+
+func printCodexPermissionDecision(behavior, message string) error {
+	decision := map[string]any{"behavior": behavior}
+	if message != "" {
+		decision["message"] = message
+	}
+	return printJSON(map[string]any{
+		"hookSpecificOutput": map[string]any{
+			"hookEventName": "PermissionRequest",
+			"decision":      decision,
+		},
+	})
+}
+
 // emitActionToSSE sends an action event to the SSE server (fire-and-forget).
 func emitActionToSSE(cfg *config.PilotConfig, ts time.Time, actionType, detail string, confidence *float64, toolName, toolInput, cwd, sessionID string) {
 	body, _ := json.Marshal(map[string]any{
@@ -343,6 +502,13 @@ func toolSummary(toolName, toolInput string) string {
 	if err := json.Unmarshal([]byte(toolInput), &parsed); err == nil {
 		switch toolName {
 		case "Bash":
+			if cmd, ok := parsed["command"].(string); ok {
+				if len(cmd) > 80 {
+					cmd = cmd[:80] + "..."
+				}
+				return toolName + ": " + cmd
+			}
+		case "apply_patch":
 			if cmd, ok := parsed["command"].(string); ok {
 				if len(cmd) > 80 {
 					cmd = cmd[:80] + "..."

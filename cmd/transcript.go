@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+
+	"github.com/NiallBrickell/pilot/internal/transcript"
 )
 
 // tailBytes is the maximum number of bytes to read from the end of a transcript
@@ -51,32 +53,11 @@ func lastUserMsgHash(path string) string {
 		if json.Unmarshal(lines[i], &entry) != nil {
 			continue
 		}
-		msg, ok := entry["message"].(map[string]any)
-		if !ok {
+		msg, ok := transcript.ParseLine(entry)
+		if !ok || msg.Role != "user" {
 			continue
 		}
-		role, _ := msg["role"].(string)
-		if role != "user" {
-			continue
-		}
-		return extractUserHash(msg)
-	}
-	return ""
-}
-
-// extractUserHash returns the first 200 chars of a user message's text content.
-func extractUserHash(msg map[string]any) string {
-	switch content := msg["content"].(type) {
-	case string:
-		return content[:min(len(content), 200)]
-	case []any:
-		for _, item := range content {
-			if m, ok := item.(map[string]any); ok {
-				if t, ok := m["text"].(string); ok {
-					return t[:min(len(t), 200)]
-				}
-			}
-		}
+		return msg.Text[:min(len(msg.Text), 200)]
 	}
 	return ""
 }

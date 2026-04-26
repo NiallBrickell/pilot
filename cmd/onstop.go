@@ -15,6 +15,7 @@ import (
 	"github.com/NiallBrickell/pilot/internal/auth"
 	"github.com/NiallBrickell/pilot/internal/config"
 	"github.com/NiallBrickell/pilot/internal/state"
+	"github.com/NiallBrickell/pilot/internal/transcript"
 
 	"github.com/spf13/cobra"
 )
@@ -23,16 +24,16 @@ func init() {
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "on-stop",
 		Short: "Run as a Claude Code Stop hook (evaluates if Claude paused unnecessarily)",
-		RunE:  runOnStop,
+		RunE:  func(cmd *cobra.Command, args []string) error { return runOnStopForRuntime(runtimeClaude) },
+	})
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "codex-on-stop",
+		Short: "Run as a Codex Stop hook (evaluates if Codex paused unnecessarily)",
+		RunE:  func(cmd *cobra.Command, args []string) error { return runOnStopForRuntime(runtimeCodex) },
 	})
 }
 
-func runOnStop(cmd *cobra.Command, args []string) error {
-	if !auth.IsClaudeAuthed() {
-		state.WriteLog("debug", "on-stop", "skipped: claude not authenticated")
-		return nil
-	}
-
+func runOnStopForRuntime(runtime hookRuntime) error {
 	input, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		state.WriteLog("error", "on-stop", "failed to read stdin: "+err.Error())
@@ -61,6 +62,14 @@ func runOnStop(cmd *cobra.Command, args []string) error {
 		sessionCwd, _ = os.Getwd()
 	}
 	sessionID, _ := hookData["session_id"].(string)
+	if sessionID == "" {
+		sessionID, _ = hookData["turn_id"].(string)
+	}
+
+	if runtime == runtimeClaude && !auth.IsClaudeAuthed() {
+		state.WriteLog("debug", "on-stop", "skipped: claude not authenticated")
+		return nil
+	}
 
 	state.WriteLog("debug", "on-stop", fmt.Sprintf("transcript=%q lastMsg=%d chars cwd=%q session=%q",
 		transcriptPath, len(lastMessage), sessionCwd, sessionID))
@@ -187,37 +196,12 @@ func buildConversationSummary(path string) (string, error) {
 			continue
 		}
 
-		msg, _ := entry["message"].(map[string]any)
-		if msg == nil {
+		msg, ok := transcript.ParseLine(entry)
+		if !ok {
 			continue
 		}
 
-		role, _ := msg["role"].(string)
-		if role == "" {
-			continue
-		}
-
-		var text string
-		switch content := msg["content"].(type) {
-		case string:
-			text = content
-		case []any:
-			var texts []string
-			for _, item := range content {
-				if m, ok := item.(map[string]any); ok {
-					if t, ok := m["text"].(string); ok && t != "" {
-						texts = append(texts, t)
-					}
-				}
-			}
-			text = strings.Join(texts, "\n")
-		}
-
-		if text == "" {
-			continue
-		}
-
-		allMessages = append(allMessages, message{role: role, text: text})
+		allMessages = append(allMessages, message{role: msg.Role, text: msg.Text})
 	}
 
 	if len(allMessages) == 0 {

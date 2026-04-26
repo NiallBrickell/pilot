@@ -1,24 +1,24 @@
 # pilot
 
-AI copilot for Claude Code sessions — auto-approves safe tool calls, escalates dangerous ones, and nudges Claude when it stops unnecessarily. Designed for running 20+ simultaneous sessions without babysitting.
+AI copilot for Claude Code and Codex sessions — auto-approves safe tool calls, escalates dangerous ones, and nudges agents when they stop unnecessarily. Designed for running 20+ simultaneous sessions without babysitting.
 
 ## What it does
 
-1. **Three-layer approval** — tool calls go through Claude Code settings → pilot rules → Haiku evaluation. Most calls resolve without an LLM call.
-2. **Escalation** — dangerous calls are held for human approval (via dashboard, webhook, or future TUI). If no response within the timeout, Claude prompts normally.
-3. **Idle detection** — when Claude stops unnecessarily, Haiku evaluates the transcript and auto-responds with context-aware nudges like "run the tests" or "keep going".
-4. **Interrogation** — periodically checks if Claude is still on track. If it's going in circles or ignoring instructions, pilot redirects it.
+1. **Three-layer approval** — tool calls go through runtime settings where available → pilot rules → Haiku evaluation. Most calls resolve without an LLM call.
+2. **Escalation** — dangerous calls are held for human approval via dashboard, webhook, or future TUI. If no response arrives before timeout, Claude prompts normally and Codex PermissionRequest hooks decline to decide.
+3. **Idle detection** — when an agent stops unnecessarily, Haiku evaluates the transcript and auto-responds with context-aware nudges like "run the tests" or "keep going".
+4. **Interrogation** — periodically checks if the agent is still on track. If it's going in circles or ignoring instructions, pilot redirects it.
 5. **Webhooks** — POST events to your own HTTP endpoints for custom integrations, dashboards, or logging.
 
 ## Architecture
 
 ```
-Claude Code session (any of 20+)
+Claude Code / Codex session (any of 20+)
     │
-    ├─ PreToolUse hook ──→ pilot approve
+    ├─ PreToolUse / PermissionRequest hook ──→ pilot approve / pilot codex-approve
     │                         │
     │                         POST to pilot serve
-    │                         ├─ Layer 1: Claude Code settings (no LLM)
+    │                         ├─ Layer 1: runtime settings where available (no LLM)
     │                         ├─ Layer 2: Pilot rules (no LLM)
     │                         ├─ Layer 3: Haiku via Anthropic API
     │                         │
@@ -26,8 +26,8 @@ Claude Code session (any of 20+)
     │                         ├─ Escalated → wait for human (timeout configurable)
     │                         └─ Interrogation → periodic on-track check
     │
-    ├─ Stop hook ──→ pilot on-stop
-    │                   └─ Haiku evaluates if Claude should keep going
+    ├─ Stop hook ──→ pilot on-stop / pilot codex-on-stop
+    │                   └─ Haiku evaluates if the agent should keep going
     │
     ├─ SSE stream ──→ Dashboard / TUI (real-time events)
     │
@@ -42,7 +42,7 @@ cd pilot
 make start
 ```
 
-That's it. `pilot start` builds, creates `~/.pilot/` with a default config, installs hooks into `~/.claude/settings.json`, and starts the server. No manual setup needed.
+That's it. `pilot start` builds, creates `~/.pilot/` with a default config, installs hooks into `~/.claude/settings.json` and `~/.codex/hooks.json`, enables Codex hooks in `~/.codex/config.toml`, and starts the server. No manual setup needed.
 
 To stop: `make stop` (or `./pilot stop`). This removes hooks and kills the server.
 
@@ -50,29 +50,31 @@ To stop: `make stop` (or `./pilot stop`). This removes hooks and kills the serve
 
 - Go 1.22+
 - An Anthropic API key (set `ANTHROPIC_API_KEY` in env or `~/.pilot/.env`)
-- Claude Code with auth configured (`claude auth login`)
+- Claude Code with auth configured (`claude auth login`) and/or Codex CLI
 
 ## How it works
 
 ### Hook flow
 
-The `PreToolUse` hook fires for: `Bash`, `Write`, `Edit`, `NotebookEdit`, `WebFetch`, `WebSearch`. Read-only tools (Read, Glob, Grep, etc.) are never intercepted.
+For Claude Code, the `PreToolUse` hook fires for: `Bash`, `Write`, `Edit`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Read`, `Grep`, `Glob`, and `Agent`.
 
-When a hook fires, `pilot approve` POSTs to `pilot serve`, which runs the three-layer hierarchy:
+For Codex, Pilot installs `PreToolUse` guardrail hooks plus `PermissionRequest` approval hooks for `Bash`, `apply_patch`/`Edit`/`Write`, and MCP tools. Codex `PreToolUse` can only block, so auto-approval happens in `PermissionRequest`.
 
-1. **Claude Code settings** — reads `~/.claude/settings.json` and `.claude/settings.local.json` walking up from the session's cwd. First match wins. Respects `defaultMode: "acceptEdits"`.
+When a hook fires, `pilot approve` or `pilot codex-approve` POSTs to `pilot serve`, which runs the approval hierarchy:
+
+1. **Runtime settings** — for Claude Code, reads `~/.claude/settings.json` and `.claude/settings.local.json` walking up from the session's cwd. Codex uses its own approval prompt machinery, so Pilot skips Claude settings for Codex requests.
 2. **Pilot rules** — fast pattern matching without LLM (extension point).
 3. **Haiku evaluation** — calls the Anthropic API directly with structured JSON output.
 
 ### Idle detection
 
-The `Stop` hook fires when Claude stops. `pilot on-stop` reads the transcript, builds a structured conversation summary (original request, recent user messages, recent assistant messages, Claude's final message), and asks Haiku whether Claude should keep going.
+The `Stop` hook fires when the agent stops. `pilot on-stop` or `pilot codex-on-stop` reads the transcript, builds a structured conversation summary, and asks Haiku whether the agent should keep going.
 
-If confidence exceeds the threshold, pilot returns `{"decision": "block", "reason": "keep going — run the tests"}` — Claude Code sees the reason and continues without waiting for user input. No PTY wrapper needed.
+If confidence exceeds the threshold, pilot returns `{"decision": "block", "reason": "keep going — run the tests"}`. Claude Code and Codex both treat this Stop-hook block as a continuation prompt.
 
 ### Interrogation
 
-On the 1st, 5th, and every 25th tool call after a user message, pilot checks if Claude is still on track. If it's going in circles, doing workarounds instead of fixing root causes, or ignoring instructions, pilot denies the tool call with a redirect message.
+On the 1st, 5th, and every 25th tool call after a user message, pilot checks if the agent is still on track. If it's going in circles, doing workarounds instead of fixing root causes, or ignoring instructions, pilot denies the tool call with a redirect message.
 
 ## Running standalone
 
@@ -91,8 +93,11 @@ Pilot works completely standalone — the dashboard is optional.
 | `pilot stop` | Remove hooks, stop server, disable pilot |
 | `pilot dashboard` | Download (if needed) and launch the desktop GUI |
 | `pilot serve` | Start server in foreground (for debugging) |
-| `pilot approve` | PreToolUse hook handler (called by Claude Code) |
-| `pilot on-stop` | Stop hook handler (called by Claude Code) |
+| `pilot approve` | Claude Code PreToolUse hook handler |
+| `pilot codex-approve` | Codex PreToolUse / PermissionRequest hook handler |
+| `pilot on-stop` | Claude Code Stop hook handler |
+| `pilot codex-on-stop` | Codex Stop hook handler |
+| `pilot codex-interrogate` | Codex PreToolUse interrogation hook handler |
 | `pilot status` | Print current state as JSON |
 | `pilot profile` | Show evaluation timing stats (avg, p50, p95, p99 by source) |
 | `pilot wrap` | Wrap a Claude session in a monitored PTY |
@@ -121,7 +126,7 @@ All config lives in `~/.pilot/pilot.toml`. Created automatically on first run. E
 | Setting | Description |
 |---------|-------------|
 | `[prompts].approval` | System prompt for tool approval. Controls what gets auto-approved vs escalated. |
-| `[prompts].auto_respond` | System prompt for idle detection. Controls when and how pilot nudges Claude. |
+| `[prompts].auto_respond` | System prompt for idle detection. Controls when and how pilot nudges the agent. |
 
 ### Webhooks
 
@@ -180,7 +185,7 @@ This downloads the prebuilt app from GitHub releases to `~/.pilot/` and launches
 
 - Live action timeline with SSE event stream
 - Pending approval cards with countdown timer and approve/reject buttons
-- On/off toggle (installs/uninstalls Claude Code hooks)
+- On/off toggle (installs/uninstalls Claude Code and Codex hooks)
 - Full config editor for all `pilot.toml` settings and prompts
 - Dark theme
 
@@ -250,7 +255,7 @@ Configure `[[webhooks]]` in `pilot.toml` to receive HTTP POST callbacks. Better 
 | `/status` | GET | Current pilot state + hooks status as JSON |
 | `/approve/{id}` | POST | Approve a pending escalated call |
 | `/reject/{id}` | POST | Reject a pending escalated call |
-| `/hooks/install` | POST | Install pilot hooks into `~/.claude/settings.json` |
-| `/hooks/uninstall` | POST | Remove pilot hooks from `~/.claude/settings.json` |
+| `/hooks/install` | POST | Install pilot hooks into Claude Code and Codex config |
+| `/hooks/uninstall` | POST | Remove pilot hooks from Claude Code and Codex config |
 | `/config` | GET | Current pilot configuration as JSON |
 | `/logs` | GET | Recent pilot logs |
