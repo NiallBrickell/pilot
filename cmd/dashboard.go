@@ -44,6 +44,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	installed := installedDashboardVersion()
 
 	needDownload := appPath == "" || (latestErr == nil && installed != latest)
+	updatedDashboard := false
 
 	if needDownload {
 		if latestErr != nil {
@@ -66,8 +67,13 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		if err := writeInstalledDashboardVersion(latest); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: couldn't record dashboard version: %v\n", err)
 		}
+		updatedDashboard = true
 	} else if latestErr != nil {
 		fmt.Fprintln(os.Stderr, "warning: couldn't check for dashboard updates, using local copy")
+	}
+
+	if updatedDashboard {
+		stopRunningDashboard()
 	}
 
 	fmt.Println("Launching dashboard...")
@@ -222,4 +228,12 @@ func launchDashboard(appPath string) error {
 		cmd.Stderr = os.Stderr
 		return cmd.Start()
 	}
+}
+
+func stopRunningDashboard() {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		return
+	}
+	_ = exec.Command("pkill", "-x", "pilot-dashboard").Run()
+	time.Sleep(300 * time.Millisecond)
 }
