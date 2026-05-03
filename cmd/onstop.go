@@ -42,6 +42,12 @@ func runOnStopForRuntime(runtime hookRuntime) error {
 
 	state.WriteLog("debug", "on-stop", fmt.Sprintf("hook fired, input length: %d bytes", len(input)))
 
+	cfg := config.Load()
+	if runtime == runtimeCodex && !cfg.General.CodexStopHookReplies {
+		state.WriteLog("debug", "on-stop", "skipped: Codex stop hook replies disabled")
+		return nil
+	}
+
 	var hookData map[string]any
 	if err := json.Unmarshal(input, &hookData); err != nil {
 		state.WriteLog("warn", "on-stop", "failed to parse hook input: "+err.Error())
@@ -92,8 +98,6 @@ func runOnStopForRuntime(runtime hookRuntime) error {
 		context = "No transcript available"
 		state.WriteLog("debug", "on-stop", "no context available, using fallback")
 	}
-
-	cfg := config.Load()
 
 	// Try server first (semaphore-limited, emits SSE events)
 	if ok := evaluateIdleViaServer(cfg, context, sessionCwd, sessionID); ok {

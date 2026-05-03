@@ -131,3 +131,33 @@ func TestUninstallAllRemovesOnlyPilotHooks(t *testing.T) {
 		t.Fatalf("non-Pilot Codex hook was removed:\n%s", codexData)
 	}
 }
+
+func TestInstallCodexOmitsStopHookWhenRepliesDisabled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(home, "pilot.toml")
+	t.Setenv("PILOT_CONFIG", configPath)
+	if err := os.WriteFile(configPath, []byte("[general]\ncodex_stop_hook_replies = false\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := InstallCodex("/tmp/pilot"); err != nil {
+		t.Fatal(err)
+	}
+
+	codexData, err := os.ReadFile(filepath.Join(home, ".codex", "hooks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"pilot codex-approve", "pilot codex-interrogate"} {
+		if !strings.Contains(string(codexData), want) {
+			t.Fatalf("Codex hooks missing %q:\n%s", want, codexData)
+		}
+	}
+	if strings.Contains(string(codexData), "pilot codex-on-stop") {
+		t.Fatalf("Codex Stop hook should be omitted when replies are disabled:\n%s", codexData)
+	}
+	if !CheckInstalled().CodexInstalled {
+		t.Fatalf("Codex hooks should count as installed when Stop replies are disabled:\n%s", codexData)
+	}
+}

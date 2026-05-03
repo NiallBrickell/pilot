@@ -27,6 +27,8 @@ interrogation_confidence = 0.7
 grace_period_s = 0
 # How long to wait for human decision on escalated calls (seconds)
 escalation_timeout_s = 30
+# Whether Codex Stop hooks may nudge Codex to continue.
+codex_stop_hook_replies = true
 
 # Webhooks — receive pilot events via HTTP POST.
 # Uncomment to enable. Events: action, pending_approval, approval_resolved

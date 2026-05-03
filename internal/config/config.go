@@ -49,6 +49,9 @@ type GeneralConfig struct {
 	// Auto-approve all tool calls without evaluation (for autonomous/sandboxed use).
 	// Interrogation still runs on schedule.
 	AutoApproveAll bool `toml:"auto_approve_all"`
+
+	// Whether Codex Stop hooks may return a continuation reply.
+	CodexStopHookReplies bool `toml:"codex_stop_hook_replies"`
 }
 
 const (
@@ -172,5 +175,8 @@ func applyDefaults(cfg *PilotConfig, md toml.MetaData) {
 	}
 	if !md.IsDefined("general", "output_cost_per_mtok_usd") || cfg.General.OutputCostPerMTokUSD <= 0 {
 		cfg.General.OutputCostPerMTokUSD = DefaultOutputCostPerMTokUSD
+	}
+	if !md.IsDefined("general", "codex_stop_hook_replies") {
+		cfg.General.CodexStopHookReplies = true
 	}
 }

@@ -26,6 +26,7 @@ type PilotGeneralConfig struct {
 	InputCostPerMTokUSD     float64 `json:"input_cost_per_mtok_usd" toml:"input_cost_per_mtok_usd"`
 	OutputCostPerMTokUSD    float64 `json:"output_cost_per_mtok_usd" toml:"output_cost_per_mtok_usd"`
 	InterrogationConfidence float64 `json:"interrogation_confidence" toml:"interrogation_confidence"`
+	CodexStopHookReplies    bool    `json:"codex_stop_hook_replies" toml:"codex_stop_hook_replies"`
 }
 
 type PilotPromptsConfig struct {
@@ -52,6 +53,9 @@ func ReadPilotConfig() (PilotConfig, error) {
 		}
 		if !md.IsDefined("general", "output_cost_per_mtok_usd") || cfg.General.OutputCostPerMTokUSD <= 0 {
 			cfg.General.OutputCostPerMTokUSD = 5.0
+		}
+		if !md.IsDefined("general", "codex_stop_hook_replies") {
+			cfg.General.CodexStopHookReplies = true
 		}
 	}
 	return cfg, err

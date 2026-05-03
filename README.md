@@ -118,6 +118,7 @@ All config lives in `~/.pilot/pilot.toml`. Created automatically on first run. E
 | `pending_response_max_age_s` | `30` | Discard stale pending responses (s) |
 | `grace_period_s` | `0` | Delay before auto-approvals take effect (0 = instant) |
 | `escalation_timeout_s` | `30` | Wait for human on escalated calls (s) |
+| `codex_stop_hook_replies` | `true` | Allow Codex Stop hooks to nudge Codex to continue |
 | `sse_port` | `9721` | SSE event stream port |
 | `max_concurrent_evals` | `4+2` | Max concurrent API calls (4 approval + 2 idle, separate semaphores) |
 | `evaluator_timeout_ms` | `15000` | Evaluator call timeout (ms) |

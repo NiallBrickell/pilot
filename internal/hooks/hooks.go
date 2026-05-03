@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/NiallBrickell/pilot/internal/config"
 )
 
 type Status struct {
@@ -32,9 +34,11 @@ func CheckInstalled() Status {
 
 	if data, err := os.ReadFile(st.CodexHooksPath); err == nil {
 		content := string(data)
+		cfg := config.Load()
+		codexStopOK := !cfg.General.CodexStopHookReplies || strings.Contains(content, "pilot codex-on-stop")
 		st.CodexInstalled = strings.Contains(content, "pilot codex-approve") &&
 			strings.Contains(content, "pilot codex-interrogate") &&
-			strings.Contains(content, "pilot codex-on-stop")
+			codexStopOK
 	}
 
 	st.Installed = st.ClaudeInstalled || st.CodexInstalled
@@ -154,6 +158,7 @@ func InstallCodex(pilotBin string) error {
 	if err := ensureCodexFeatures(CodexConfigPath()); err != nil {
 		return err
 	}
+	cfg := config.Load()
 
 	path := CodexHooksPath()
 	settings := make(map[string]any)
@@ -195,18 +200,22 @@ func InstallCodex(pilotBin string) error {
 			},
 		},
 	)
-	hooks["Stop"] = mergeHookEntries(hooks["Stop"],
-		map[string]any{
-			"hooks": []any{
-				map[string]any{
-					"type":          "command",
-					"command":       pilotBin + " codex-on-stop",
-					"timeout":       30,
-					"statusMessage": "Pilot checking whether to continue",
+	if cfg.General.CodexStopHookReplies {
+		hooks["Stop"] = mergeHookEntries(hooks["Stop"],
+			map[string]any{
+				"hooks": []any{
+					map[string]any{
+						"type":          "command",
+						"command":       pilotBin + " codex-on-stop",
+						"timeout":       30,
+						"statusMessage": "Pilot checking whether to continue",
+					},
 				},
 			},
-		},
-	)
+		)
+	} else {
+		removePilotHookEntries(hooks, "Stop")
+	}
 
 	settings["hooks"] = hooks
 	data, err := json.MarshalIndent(settings, "", "  ")
