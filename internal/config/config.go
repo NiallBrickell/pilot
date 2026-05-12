@@ -50,8 +50,10 @@ type GeneralConfig struct {
 	// Interrogation still runs on schedule.
 	AutoApproveAll bool `toml:"auto_approve_all"`
 
-	// Whether Codex Stop hooks may return a continuation reply.
-	CodexStopHookReplies bool `toml:"codex_stop_hook_replies"`
+	// Whether Stop hooks may return a continuation reply (all runtimes).
+	StopHookReplies bool `toml:"stop_hook_replies"`
+	// Deprecated: renamed to stop_hook_replies. Parsed for backward compat.
+	DeprecatedCodexStopHookReplies *bool `toml:"codex_stop_hook_replies,omitempty"`
 }
 
 const (
@@ -176,7 +178,11 @@ func applyDefaults(cfg *PilotConfig, md toml.MetaData) {
 	if !md.IsDefined("general", "output_cost_per_mtok_usd") || cfg.General.OutputCostPerMTokUSD <= 0 {
 		cfg.General.OutputCostPerMTokUSD = DefaultOutputCostPerMTokUSD
 	}
-	if !md.IsDefined("general", "codex_stop_hook_replies") {
-		cfg.General.CodexStopHookReplies = true
+	if !md.IsDefined("general", "stop_hook_replies") {
+		if cfg.General.DeprecatedCodexStopHookReplies != nil {
+			cfg.General.StopHookReplies = *cfg.General.DeprecatedCodexStopHookReplies
+		} else {
+			cfg.General.StopHookReplies = true
+		}
 	}
 }

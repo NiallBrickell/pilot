@@ -264,19 +264,19 @@ export function PilotConfigPage() {
             </Field>
 
             <Field
-              label="Codex Stop Replies"
-              hint="Allow Pilot to tell Codex to continue when Codex stops early."
+              label="Stop Hook Replies"
+              hint="Allow Pilot to nudge agents to continue when they stop early (all runtimes)."
             >
               <label className="flex items-center gap-2 text-xs text-foreground">
                 <input
                   type="checkbox"
-                  checked={config.general.codex_stop_hook_replies}
+                  checked={config.general.stop_hook_replies}
                   onChange={(e) =>
                     setConfig({
                       ...config,
                       general: {
                         ...config.general,
-                        codex_stop_hook_replies: e.target.checked,
+                        stop_hook_replies: e.target.checked,
                       },
                     })
                   }

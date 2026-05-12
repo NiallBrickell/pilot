@@ -25,20 +25,23 @@ func CheckInstalled() Status {
 		CodexConfigPath:    CodexConfigPath(),
 	}
 
+	cfg := config.Load()
+	stopOK := func(content, marker string) bool {
+		return !cfg.General.StopHookReplies || strings.Contains(content, marker)
+	}
+
 	if data, err := os.ReadFile(st.ClaudeSettingsPath); err == nil {
 		content := string(data)
 		st.ClaudeInstalled = strings.Contains(content, "pilot approve") &&
 			strings.Contains(content, "pilot interrogate") &&
-			strings.Contains(content, "pilot on-stop")
+			stopOK(content, "pilot on-stop")
 	}
 
 	if data, err := os.ReadFile(st.CodexHooksPath); err == nil {
 		content := string(data)
-		cfg := config.Load()
-		codexStopOK := !cfg.General.CodexStopHookReplies || strings.Contains(content, "pilot codex-on-stop")
 		st.CodexInstalled = strings.Contains(content, "pilot codex-approve") &&
 			strings.Contains(content, "pilot codex-interrogate") &&
-			codexStopOK
+			stopOK(content, "pilot codex-on-stop")
 	}
 
 	st.Installed = st.ClaudeInstalled || st.CodexInstalled
@@ -101,13 +104,18 @@ func InstallClaude(pilotBin string) error {
 			},
 		},
 	)
-	hooks["Stop"] = mergeHookEntries(hooks["Stop"],
-		map[string]any{
-			"hooks": []any{
-				map[string]any{"type": "command", "command": pilotBin + " on-stop"},
+	cfg := config.Load()
+	if cfg.General.StopHookReplies {
+		hooks["Stop"] = mergeHookEntries(hooks["Stop"],
+			map[string]any{
+				"hooks": []any{
+					map[string]any{"type": "command", "command": pilotBin + " on-stop"},
+				},
 			},
-		},
-	)
+		)
+	} else {
+		removePilotHookEntries(hooks, "Stop")
+	}
 
 	settings["hooks"] = hooks
 	data, err := json.MarshalIndent(settings, "", "  ")
@@ -189,7 +197,7 @@ func InstallCodex(pilotBin string) error {
 	)
 	hooks["PermissionRequest"] = mergeHookEntries(hooks["PermissionRequest"],
 		map[string]any{
-			"matcher": "^(Bash|apply_patch|Edit|Write|mcp__.*)$",
+			"matcher": ".*",
 			"hooks": []any{
 				map[string]any{
 					"type":          "command",
@@ -200,7 +208,7 @@ func InstallCodex(pilotBin string) error {
 			},
 		},
 	)
-	if cfg.General.CodexStopHookReplies {
+	if cfg.General.StopHookReplies {
 		hooks["Stop"] = mergeHookEntries(hooks["Stop"],
 			map[string]any{
 				"hooks": []any{

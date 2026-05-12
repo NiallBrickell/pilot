@@ -137,7 +137,7 @@ func TestInstallCodexOmitsStopHookWhenRepliesDisabled(t *testing.T) {
 	t.Setenv("HOME", home)
 	configPath := filepath.Join(home, "pilot.toml")
 	t.Setenv("PILOT_CONFIG", configPath)
-	if err := os.WriteFile(configPath, []byte("[general]\ncodex_stop_hook_replies = false\n"), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte("[general]\nstop_hook_replies = false\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 

@@ -43,8 +43,8 @@ func runOnStopForRuntime(runtime hookRuntime) error {
 	state.WriteLog("debug", "on-stop", fmt.Sprintf("hook fired, input length: %d bytes", len(input)))
 
 	cfg := config.Load()
-	if runtime == runtimeCodex && !cfg.General.CodexStopHookReplies {
-		state.WriteLog("debug", "on-stop", "skipped: Codex stop hook replies disabled")
+	if !cfg.General.StopHookReplies {
+		state.WriteLog("debug", "on-stop", "skipped: stop hook replies disabled")
 		return nil
 	}
 

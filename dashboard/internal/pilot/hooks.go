@@ -31,22 +31,21 @@ func CheckHooksInstalled() HookStatus {
 	claudePath := claudeSettingsPath()
 	codexPath := codexHooksPath()
 	installed := false
+	cfg, _ := ReadPilotConfig()
+	stopOK := func(content, marker string) bool {
+		return !cfg.General.StopHookReplies || strings.Contains(content, marker)
+	}
 	if data, err := os.ReadFile(claudePath); err == nil {
 		content := string(data)
 		installed = installed || (strings.Contains(content, "pilot approve") &&
 			strings.Contains(content, "pilot interrogate") &&
-			strings.Contains(content, "pilot on-stop"))
+			stopOK(content, "pilot on-stop"))
 	}
 	if data, err := os.ReadFile(codexPath); err == nil {
 		content := string(data)
-		cfg, err := ReadPilotConfig()
-		codexStopOK := strings.Contains(content, "pilot codex-on-stop")
-		if err == nil && !cfg.General.CodexStopHookReplies {
-			codexStopOK = true
-		}
 		installed = installed || (strings.Contains(content, "pilot codex-approve") &&
 			strings.Contains(content, "pilot codex-interrogate") &&
-			codexStopOK)
+			stopOK(content, "pilot codex-on-stop"))
 	}
 	return HookStatus{Installed: installed, SettingsPath: claudePath + " / " + codexPath}
 }
@@ -106,7 +105,16 @@ func installClaudeHooks(bin string) error {
 
 	// Keep existing non-pilot entries, replace/add pilot entries
 	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], pilotPreToolUse, pilotInterrogate)
-	hooks["Stop"] = mergeHookEntries(hooks["Stop"], pilotStop)
+
+	cfg, err := ReadPilotConfig()
+	if err != nil {
+		cfg.General.StopHookReplies = true
+	}
+	if cfg.General.StopHookReplies {
+		hooks["Stop"] = mergeHookEntries(hooks["Stop"], pilotStop)
+	} else {
+		removePilotEntries(hooks, "Stop")
+	}
 
 	settings["hooks"] = hooks
 
@@ -128,7 +136,7 @@ func installCodexHooks(bin string) error {
 	}
 	cfg, err := ReadPilotConfig()
 	if err != nil {
-		cfg.General.CodexStopHookReplies = true
+		cfg.General.StopHookReplies = true
 	}
 
 	path := codexHooksPath()
@@ -152,13 +160,13 @@ func installCodexHooks(bin string) error {
 	)
 	hooks["PermissionRequest"] = mergeHookEntries(hooks["PermissionRequest"],
 		map[string]any{
-			"matcher": "^(Bash|apply_patch|Edit|Write|mcp__.*)$",
+			"matcher": ".*",
 			"hooks": []any{
 				map[string]any{"type": "command", "command": bin + " codex-approve", "timeout": 90, "statusMessage": "Pilot reviewing approval"},
 			},
 		},
 	)
-	if cfg.General.CodexStopHookReplies {
+	if cfg.General.StopHookReplies {
 		hooks["Stop"] = mergeHookEntries(hooks["Stop"],
 			map[string]any{
 				"hooks": []any{

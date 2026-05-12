@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/NiallBrickell/pilot/internal/auth"
@@ -71,6 +72,10 @@ func runApproveForRuntime(runtime hookRuntime) error {
 	hookEventName, _ := toolInfo["hook_event_name"].(string)
 	if hookEventName == "" {
 		hookEventName, _ = toolInfo["hookEventName"].(string)
+	}
+
+	if runtime == runtimeCodex {
+		state.WriteLog("debug", "codex-approve", fmt.Sprintf("tool=%s hookEvent=%q cwd=%q", toolName, hookEventName, toolInfo["cwd"]))
 	}
 
 	var toolInput string
@@ -301,7 +306,7 @@ func handleEvalResult(cfg *config.PilotConfig, runtime hookRuntime, hookEventNam
 }
 
 func handleCodexEvalResult(cfg *config.PilotConfig, hookEventName string, result *evalResult, toolName, toolInput, cwd, sessionID string, cliStart time.Time) error {
-	if hookEventName == "PermissionRequest" {
+	if strings.EqualFold(hookEventName, "PermissionRequest") {
 		return handleCodexPermissionRequestResult(cfg, result, toolName, toolInput, cwd, sessionID, cliStart)
 	}
 	return handleCodexPreToolUseResult(cfg, result, toolName, toolInput, cwd, sessionID, cliStart)
