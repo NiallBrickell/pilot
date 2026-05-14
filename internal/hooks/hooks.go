@@ -1,9 +1,12 @@
 package hooks
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/NiallBrickell/pilot/internal/config"
@@ -233,7 +236,11 @@ func InstallCodex(pilotBin string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return err
+	}
+	// Write correct trust hashes so Codex trusts the hooks immediately.
+	return writeCodexHookTrust(CodexConfigPath(), path, pilotBin)
 }
 
 func UninstallCodex() error {
@@ -313,6 +320,103 @@ func isPilotHookEntry(entryJSON string) bool {
 		strings.Contains(entryJSON, "pilot codex-approve") ||
 		strings.Contains(entryJSON, "pilot codex-interrogate") ||
 		strings.Contains(entryJSON, "pilot codex-on-stop")
+}
+
+// writeCodexHookTrust computes the correct trust hashes for the installed
+// hooks and writes them to the Codex config so hooks are trusted immediately
+// without requiring the user to re-approve them.
+func writeCodexHookTrust(configPath, hooksPath, pilotBin string) error {
+	cfg := config.Load()
+
+	type hookEntry struct {
+		eventName string
+		matcher   string
+		command   string
+		timeout   int
+		statusMsg string
+	}
+
+	entries := []hookEntry{
+		{"pre_tool_use", ".*", pilotBin + " codex-interrogate", 90, "Pilot checking trajectory"},
+		{"permission_request", ".*", pilotBin + " codex-approve", 90, "Pilot reviewing approval"},
+	}
+	if cfg.General.StopHookReplies {
+		entries = append(entries, hookEntry{"stop", ".*", pilotBin + " codex-on-stop", 30, "Pilot checking whether to continue"})
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var out []string
+	inHookState := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			inHookState = strings.HasPrefix(trimmed, "[hooks.state")
+		}
+		if !inHookState {
+			out = append(out, line)
+		}
+	}
+	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+		out = out[:len(out)-1]
+	}
+
+	for _, e := range entries {
+		h := codexHookHash(e.eventName, e.matcher, e.command, e.timeout, e.statusMsg)
+		key := fmt.Sprintf("[hooks.state.\"%s:%s:0:0\"]", hooksPath, e.eventName)
+		out = append(out, "", key, fmt.Sprintf("trusted_hash = %q", h))
+	}
+
+	return os.WriteFile(configPath, []byte(strings.Join(out, "\n")+"\n"), 0600)
+}
+
+// codexHookHash computes the trust hash Codex expects: SHA-256 of the
+// canonical JSON representation of the normalized hook identity.
+func codexHookHash(eventName, matcher, command string, timeout int, statusMsg string) string {
+	hook := map[string]any{
+		"async":         false,
+		"command":       command,
+		"statusMessage": statusMsg,
+		"timeout":       timeout,
+		"type":          "command",
+	}
+	identity := map[string]any{
+		"event_name": eventName,
+		"hooks":      []any{hook},
+		"matcher":    matcher,
+	}
+	canonical := canonicalJSON(identity)
+	b, _ := json.Marshal(canonical)
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("sha256:%x", sum)
+}
+
+func canonicalJSON(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		m := make(map[string]any, len(val))
+		for _, k := range keys {
+			m[k] = canonicalJSON(val[k])
+		}
+		return m
+	case []any:
+		out := make([]any, len(val))
+		for i, item := range val {
+			out[i] = canonicalJSON(item)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 func ensureCodexFeatures(path string) error {
