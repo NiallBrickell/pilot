@@ -73,8 +73,11 @@ func TestInstallAllAddsClaudeAndCodexHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(configData), "[features]") || !strings.Contains(string(configData), "codex_hooks = true") {
+	if !strings.Contains(string(configData), "[features]") || !strings.Contains(string(configData), "hooks = true") {
 		t.Fatalf("Codex feature flag not enabled:\n%s", configData)
+	}
+	if strings.Contains(string(configData), "codex_hooks") {
+		t.Fatalf("Deprecated codex_hooks flag should be removed:\n%s", configData)
 	}
 	for _, want := range []string{
 		"exec_permission_approvals = true",
