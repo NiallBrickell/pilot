@@ -42,9 +42,11 @@ func CheckCodexSettings(toolName string, parsed map[string]any, toolInput, cwd s
 			return ""
 		}
 		return "allow"
+	default:
+		// Trusted project: allow unknown tools (filesystem permissions,
+		// request_permissions, etc.) to match Codex's own trust model.
+		return "allow"
 	}
-
-	return ""
 }
 
 func isCodexTrustedProject(cwd string) bool {

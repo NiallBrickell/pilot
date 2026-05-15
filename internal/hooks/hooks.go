@@ -426,9 +426,12 @@ func ensureCodexFeatures(path string) error {
 	}
 
 	required := []string{
-		"codex_hooks",
+		"hooks",
 		"exec_permission_approvals",
 		"request_permissions_tool",
+	}
+	deprecated := []string{
+		"codex_hooks",
 	}
 	seen := make(map[string]bool, len(required))
 	content := string(data)
@@ -449,10 +452,15 @@ func ensureCodexFeatures(path string) error {
 			}
 		}
 		if inFeatures {
-			if key, ok := codexFeatureAssignmentKey(trimmed); ok && isRequiredCodexFeature(key, required) {
-				out = append(out, key+" = true")
-				seen[key] = true
-				continue
+			if key, ok := codexFeatureAssignmentKey(trimmed); ok {
+				if isRequiredCodexFeature(key, required) {
+					out = append(out, key+" = true")
+					seen[key] = true
+					continue
+				}
+				if isRequiredCodexFeature(key, deprecated) {
+					continue
+				}
 			}
 		}
 		if i == len(lines)-1 && trimmed == "" {
