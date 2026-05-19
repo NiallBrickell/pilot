@@ -56,6 +56,10 @@ type GeneralConfig struct {
 	DeprecatedCodexStopHookReplies *bool `toml:"codex_stop_hook_replies,omitempty"`
 }
 
+func (g GeneralConfig) IsInterrogationEnabled() bool {
+	return g.InterrogationEnabled == nil || *g.InterrogationEnabled
+}
+
 const (
 	DefaultMonthlySpendCapUSD   = 20.0
 	DefaultInputCostPerMTokUSD  = 1.0

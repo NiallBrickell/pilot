@@ -86,10 +86,7 @@ func New(cfg *config.PilotConfig) *Server {
 	if interrogationModel == "" {
 		interrogationModel = "claude-sonnet-4-6"
 	}
-	interrogationEnabled := true
-	if cfg.General.InterrogationEnabled != nil {
-		interrogationEnabled = *cfg.General.InterrogationEnabled
-	}
+	interrogationEnabled := cfg.General.IsInterrogationEnabled()
 
 	broker := NewBroker()
 

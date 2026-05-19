@@ -35,16 +35,19 @@ func CheckHooksInstalled() HookStatus {
 	stopOK := func(content, marker string) bool {
 		return !cfg.General.StopHookReplies || strings.Contains(content, marker)
 	}
+	interrogateOK := func(content, marker string) bool {
+		return !cfg.General.InterrogationEnabled || strings.Contains(content, marker)
+	}
 	if data, err := os.ReadFile(claudePath); err == nil {
 		content := string(data)
 		installed = installed || (strings.Contains(content, "pilot approve") &&
-			strings.Contains(content, "pilot interrogate") &&
+			interrogateOK(content, "pilot interrogate") &&
 			stopOK(content, "pilot on-stop"))
 	}
 	if data, err := os.ReadFile(codexPath); err == nil {
 		content := string(data)
 		installed = installed || (strings.Contains(content, "pilot codex-approve") &&
-			strings.Contains(content, "pilot codex-interrogate") &&
+			interrogateOK(content, "pilot codex-interrogate") &&
 			stopOK(content, "pilot codex-on-stop"))
 	}
 	return HookStatus{Installed: installed, SettingsPath: claudePath + " / " + codexPath}
@@ -103,13 +106,16 @@ func installClaudeHooks(bin string) error {
 		},
 	}
 
-	// Keep existing non-pilot entries, replace/add pilot entries
-	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], pilotPreToolUse, pilotInterrogate)
-
 	cfg, err := ReadPilotConfig()
 	if err != nil {
 		cfg.General.StopHookReplies = true
+		cfg.General.InterrogationEnabled = true
 	}
+	preToolUseEntries := []map[string]any{pilotPreToolUse}
+	if cfg.General.InterrogationEnabled {
+		preToolUseEntries = append(preToolUseEntries, pilotInterrogate)
+	}
+	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], preToolUseEntries...)
 	if cfg.General.StopHookReplies {
 		hooks["Stop"] = mergeHookEntries(hooks["Stop"], pilotStop)
 	} else {
@@ -137,6 +143,7 @@ func installCodexHooks(bin string) error {
 	cfg, err := ReadPilotConfig()
 	if err != nil {
 		cfg.General.StopHookReplies = true
+		cfg.General.InterrogationEnabled = true
 	}
 
 	path := codexHooksPath()
@@ -150,14 +157,16 @@ func installCodexHooks(bin string) error {
 		hooks = make(map[string]any)
 	}
 
-	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"],
-		map[string]any{
+	if cfg.General.InterrogationEnabled {
+		hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], map[string]any{
 			"matcher": ".*",
 			"hooks": []any{
 				map[string]any{"type": "command", "command": bin + " codex-interrogate", "timeout": 90, "statusMessage": "Pilot checking trajectory"},
 			},
-		},
-	)
+		})
+	} else {
+		removePilotEntries(hooks, "PreToolUse")
+	}
 	hooks["PermissionRequest"] = mergeHookEntries(hooks["PermissionRequest"],
 		map[string]any{
 			"matcher": ".*",

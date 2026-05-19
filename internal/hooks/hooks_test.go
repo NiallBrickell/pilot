@@ -164,3 +164,54 @@ func TestInstallCodexOmitsStopHookWhenRepliesDisabled(t *testing.T) {
 		t.Fatalf("Codex hooks should count as installed when Stop replies are disabled:\n%s", codexData)
 	}
 }
+
+func TestInstallAllOmitsInterrogationHooksWhenDisabled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(home, "pilot.toml")
+	t.Setenv("PILOT_CONFIG", configPath)
+	if err := os.WriteFile(configPath, []byte("[general]\ninterrogation_enabled = false\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := InstallAll("/tmp/pilot"); err != nil {
+		t.Fatal(err)
+	}
+
+	claudeData, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"pilot approve", "pilot on-stop"} {
+		if !strings.Contains(string(claudeData), want) {
+			t.Fatalf("Claude settings missing %q:\n%s", want, claudeData)
+		}
+	}
+	if strings.Contains(string(claudeData), "pilot interrogate") {
+		t.Fatalf("Claude interrogation hook should be omitted when disabled:\n%s", claudeData)
+	}
+
+	codexData, err := os.ReadFile(filepath.Join(home, ".codex", "hooks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"pilot codex-approve", "pilot codex-on-stop"} {
+		if !strings.Contains(string(codexData), want) {
+			t.Fatalf("Codex hooks missing %q:\n%s", want, codexData)
+		}
+	}
+	if strings.Contains(string(codexData), "pilot codex-interrogate") {
+		t.Fatalf("Codex interrogation hook should be omitted when disabled:\n%s", codexData)
+	}
+	if !CheckInstalled().Installed {
+		t.Fatalf("hooks should count as installed when interrogation is disabled")
+	}
+
+	configData, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(configData), "pre_tool_use") {
+		t.Fatalf("Codex PreToolUse trust state should be omitted when interrogation is disabled:\n%s", configData)
+	}
+}

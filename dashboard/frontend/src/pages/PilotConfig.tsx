@@ -286,6 +286,29 @@ export function PilotConfigPage() {
               </label>
             </Field>
 
+            <Field
+              label="Trajectory Checks"
+              hint="Allow PreToolUse hooks to redirect agents that appear stuck or off-track."
+            >
+              <label className="flex items-center gap-2 text-xs text-foreground">
+                <input
+                  type="checkbox"
+                  checked={config.general.interrogation_enabled}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      general: {
+                        ...config.general,
+                        interrogation_enabled: e.target.checked,
+                      },
+                    })
+                  }
+                  className="h-4 w-4 accent-primary"
+                />
+                Enabled
+              </label>
+            </Field>
+
             <Field label="SSE Port" hint="Port for the live event stream server">
               <input
                 type="number"
