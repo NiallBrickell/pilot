@@ -13,21 +13,22 @@ type PilotConfig struct {
 }
 
 type PilotGeneralConfig struct {
-	Model                   string  `json:"model" toml:"model"`
-	ConfidenceThreshold     float64 `json:"confidence_threshold" toml:"confidence_threshold"`
-	IdleTimeoutMs           uint64  `json:"idle_timeout_ms" toml:"idle_timeout_ms"`
-	PendingResponseMaxAge   int64   `json:"pending_response_max_age_s" toml:"pending_response_max_age_s"`
-	GracePeriodS            float64 `json:"grace_period_s" toml:"grace_period_s"`
-	EscalationTimeoutS      float64 `json:"escalation_timeout_s" toml:"escalation_timeout_s"`
-	SSEPort                 int     `json:"sse_port" toml:"sse_port"`
-	MaxConcurrentEvals      int     `json:"max_concurrent_evals" toml:"max_concurrent_evals"`
-	EvaluatorTimeoutMs      int     `json:"evaluator_timeout_ms" toml:"evaluator_timeout_ms"`
-	MonthlySpendCapUSD      float64 `json:"monthly_spend_cap_usd" toml:"monthly_spend_cap_usd"`
-	InputCostPerMTokUSD     float64 `json:"input_cost_per_mtok_usd" toml:"input_cost_per_mtok_usd"`
-	OutputCostPerMTokUSD    float64 `json:"output_cost_per_mtok_usd" toml:"output_cost_per_mtok_usd"`
-	InterrogationConfidence float64 `json:"interrogation_confidence" toml:"interrogation_confidence"`
-	StopHookReplies                bool  `json:"stop_hook_replies" toml:"stop_hook_replies"`
-	DeprecatedCodexStopHookReplies *bool `json:"-" toml:"codex_stop_hook_replies,omitempty"`
+	Model                          string  `json:"model" toml:"model"`
+	ConfidenceThreshold            float64 `json:"confidence_threshold" toml:"confidence_threshold"`
+	IdleTimeoutMs                  uint64  `json:"idle_timeout_ms" toml:"idle_timeout_ms"`
+	PendingResponseMaxAge          int64   `json:"pending_response_max_age_s" toml:"pending_response_max_age_s"`
+	GracePeriodS                   float64 `json:"grace_period_s" toml:"grace_period_s"`
+	EscalationTimeoutS             float64 `json:"escalation_timeout_s" toml:"escalation_timeout_s"`
+	SSEPort                        int     `json:"sse_port" toml:"sse_port"`
+	MaxConcurrentEvals             int     `json:"max_concurrent_evals" toml:"max_concurrent_evals"`
+	EvaluatorTimeoutMs             int     `json:"evaluator_timeout_ms" toml:"evaluator_timeout_ms"`
+	MonthlySpendCapUSD             float64 `json:"monthly_spend_cap_usd" toml:"monthly_spend_cap_usd"`
+	InputCostPerMTokUSD            float64 `json:"input_cost_per_mtok_usd" toml:"input_cost_per_mtok_usd"`
+	OutputCostPerMTokUSD           float64 `json:"output_cost_per_mtok_usd" toml:"output_cost_per_mtok_usd"`
+	InterrogationConfidence        float64 `json:"interrogation_confidence" toml:"interrogation_confidence"`
+	InterrogationEnabled           bool    `json:"interrogation_enabled" toml:"interrogation_enabled"`
+	StopHookReplies                bool    `json:"stop_hook_replies" toml:"stop_hook_replies"`
+	DeprecatedCodexStopHookReplies *bool   `json:"-" toml:"codex_stop_hook_replies,omitempty"`
 }
 
 type PilotPromptsConfig struct {
@@ -54,6 +55,9 @@ func ReadPilotConfig() (PilotConfig, error) {
 		}
 		if !md.IsDefined("general", "output_cost_per_mtok_usd") || cfg.General.OutputCostPerMTokUSD <= 0 {
 			cfg.General.OutputCostPerMTokUSD = 5.0
+		}
+		if !md.IsDefined("general", "interrogation_enabled") {
+			cfg.General.InterrogationEnabled = true
 		}
 		if !md.IsDefined("general", "stop_hook_replies") {
 			if cfg.General.DeprecatedCodexStopHookReplies != nil {

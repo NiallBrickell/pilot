@@ -72,6 +72,19 @@ func runInterrogateForRuntime(runtime hookRuntime) error {
 	}
 	transcriptPath, _ := toolInfo["transcript_path"].(string)
 
+	cfg := config.Load()
+	if !cfg.General.IsInterrogationEnabled() {
+		if runtime == runtimeCodex {
+			return nil
+		}
+		return printJSON(hookResponse{
+			HookSpecificOutput: preToolUseOutput{
+				HookEventName:      "PreToolUse",
+				PermissionDecision: "allow",
+			},
+		})
+	}
+
 	// Hash of last user message text to detect new user turns.
 	// Only read the tail of the transcript to avoid loading huge files into memory.
 	var userMsgHash string
@@ -87,8 +100,6 @@ func runInterrogateForRuntime(runtime hookRuntime) error {
 			},
 		})
 	}
-
-	cfg := config.Load()
 
 	result, ok := interrogateViaServer(cfg, toolName, toolInput, sessionCwd, sessionID, transcriptPath, userMsgHash)
 	if !ok {

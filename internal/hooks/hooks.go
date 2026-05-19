@@ -32,18 +32,21 @@ func CheckInstalled() Status {
 	stopOK := func(content, marker string) bool {
 		return !cfg.General.StopHookReplies || strings.Contains(content, marker)
 	}
+	interrogateOK := func(content, marker string) bool {
+		return !cfg.General.IsInterrogationEnabled() || strings.Contains(content, marker)
+	}
 
 	if data, err := os.ReadFile(st.ClaudeSettingsPath); err == nil {
 		content := string(data)
 		st.ClaudeInstalled = strings.Contains(content, "pilot approve") &&
-			strings.Contains(content, "pilot interrogate") &&
+			interrogateOK(content, "pilot interrogate") &&
 			stopOK(content, "pilot on-stop")
 	}
 
 	if data, err := os.ReadFile(st.CodexHooksPath); err == nil {
 		content := string(data)
 		st.CodexInstalled = strings.Contains(content, "pilot codex-approve") &&
-			strings.Contains(content, "pilot codex-interrogate") &&
+			interrogateOK(content, "pilot codex-interrogate") &&
 			stopOK(content, "pilot codex-on-stop")
 	}
 
@@ -93,21 +96,24 @@ func InstallClaude(pilotBin string) error {
 		hooks = make(map[string]any)
 	}
 
-	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"],
-		map[string]any{
+	cfg := config.Load()
+	claudePreToolUseEntries := []map[string]any{
+		{
 			"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch|Read|Grep|Glob|Agent)$",
 			"hooks": []any{
 				map[string]any{"type": "command", "command": pilotBin + " approve"},
 			},
 		},
-		map[string]any{
+	}
+	if cfg.General.IsInterrogationEnabled() {
+		claudePreToolUseEntries = append(claudePreToolUseEntries, map[string]any{
 			"matcher": ".*",
 			"hooks": []any{
 				map[string]any{"type": "command", "command": pilotBin + " interrogate"},
 			},
-		},
-	)
-	cfg := config.Load()
+		})
+	}
+	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], claudePreToolUseEntries...)
 	if cfg.General.StopHookReplies {
 		hooks["Stop"] = mergeHookEntries(hooks["Stop"],
 			map[string]any{
@@ -185,8 +191,8 @@ func InstallCodex(pilotBin string) error {
 	// Codex PreToolUse can only block. Keep it for trajectory checks only;
 	// approval evaluation belongs in PermissionRequest so routine Bash calls
 	// don't hit the LLM before Codex has decided an approval is needed.
-	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"],
-		map[string]any{
+	if cfg.General.IsInterrogationEnabled() {
+		hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], map[string]any{
 			"matcher": ".*",
 			"hooks": []any{
 				map[string]any{
@@ -196,8 +202,10 @@ func InstallCodex(pilotBin string) error {
 					"statusMessage": "Pilot checking trajectory",
 				},
 			},
-		},
-	)
+		})
+	} else {
+		removePilotHookEntries(hooks, "PreToolUse")
+	}
 	hooks["PermissionRequest"] = mergeHookEntries(hooks["PermissionRequest"],
 		map[string]any{
 			"matcher": ".*",
@@ -337,8 +345,10 @@ func writeCodexHookTrust(configPath, hooksPath, pilotBin string) error {
 	}
 
 	entries := []hookEntry{
-		{"pre_tool_use", ".*", pilotBin + " codex-interrogate", 90, "Pilot checking trajectory"},
 		{"permission_request", ".*", pilotBin + " codex-approve", 90, "Pilot reviewing approval"},
+	}
+	if cfg.General.IsInterrogationEnabled() {
+		entries = append([]hookEntry{{"pre_tool_use", ".*", pilotBin + " codex-interrogate", 90, "Pilot checking trajectory"}}, entries...)
 	}
 	if cfg.General.StopHookReplies {
 		entries = append(entries, hookEntry{"stop", ".*", pilotBin + " codex-on-stop", 30, "Pilot checking whether to continue"})

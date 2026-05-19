@@ -58,7 +58,7 @@ To stop: `make stop` (or `./pilot stop`). This removes hooks and kills the serve
 
 For Claude Code, the `PreToolUse` hook fires for: `Bash`, `Write`, `Edit`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Read`, `Grep`, `Glob`, and `Agent`.
 
-For Codex, Pilot installs `PreToolUse` trajectory-check hooks plus `PermissionRequest` approval hooks for `Bash`, `apply_patch`/`Edit`/`Write`, and MCP tools. It also enables Codex's `exec_permission_approvals` and `request_permissions_tool` feature flags so sandbox/network escalation prompts can flow through `PermissionRequest`. Codex `PreToolUse` can only block, so auto-approval happens in `PermissionRequest`.
+For Codex, Pilot installs `PreToolUse` trajectory-check hooks plus `PermissionRequest` approval hooks for `Bash`, `apply_patch`/`Edit`/`Write`, and MCP tools. It also enables Codex's `exec_permission_approvals` and `request_permissions_tool` feature flags so sandbox/network escalation prompts can flow through `PermissionRequest`. Codex `PreToolUse` can only block, so auto-approval happens in `PermissionRequest`. Set `interrogation_enabled = false` to disable the trajectory-check hook.
 
 When a hook fires, `pilot approve` or `pilot codex-approve` POSTs to `pilot serve`, which runs the approval hierarchy:
 
@@ -77,6 +77,8 @@ If confidence exceeds the threshold, pilot returns `{"decision": "block", "reaso
 ### Interrogation
 
 On the 1st, 5th, and every 25th tool call after a user message, pilot checks if the agent is still on track. If it's going in circles, doing workarounds instead of fixing root causes, or ignoring instructions, pilot denies the tool call with a redirect message.
+
+Set `interrogation_enabled = false` in `~/.pilot/pilot.toml` to disable these PreToolUse trajectory checks without disabling approval handling.
 
 ## Running standalone
 
@@ -126,6 +128,7 @@ All config lives in `~/.pilot/pilot.toml`. Created automatically on first run. E
 | `input_cost_per_mtok_usd` | `1.0` | Input token price used for local spend estimates |
 | `output_cost_per_mtok_usd` | `5.0` | Output token price used for local spend estimates |
 | `interrogation_confidence` | `0.7` | Min confidence for interrogation redirects |
+| `interrogation_enabled` | `true` | Allow PreToolUse trajectory checks to redirect stuck/off-track agents |
 
 ### Prompts
 

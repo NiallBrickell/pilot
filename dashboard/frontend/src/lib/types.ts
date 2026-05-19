@@ -53,6 +53,7 @@ export interface PilotConfig {
     input_cost_per_mtok_usd: number;
     output_cost_per_mtok_usd: number;
     interrogation_confidence: number;
+    interrogation_enabled: boolean;
     stop_hook_replies: boolean;
   };
   prompts: {
