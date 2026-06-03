@@ -7,7 +7,7 @@ AI copilot for Claude Code and Codex sessions — auto-approves safe tool calls,
 1. **Three-layer approval** — tool calls go through runtime settings where available → pilot rules → Haiku evaluation. Most calls resolve without an LLM call.
 2. **Escalation** — dangerous calls are held for human approval via dashboard, webhook, or future TUI. If no response arrives before timeout, Claude prompts normally and Codex PermissionRequest hooks decline to decide.
 3. **Idle detection** — when an agent stops unnecessarily, Haiku evaluates the transcript and auto-responds with context-aware nudges like "run the tests" or "keep going".
-4. **Interrogation** — periodically checks if the agent is still on track. If it's going in circles or ignoring instructions, pilot redirects it.
+4. **Interrogation** (opt-in) — periodically checks if the agent is still on track. If it's going in circles or ignoring instructions, pilot redirects it. Off by default; enable with `interrogation_enabled = true`.
 5. **Webhooks** — POST events to your own HTTP endpoints for custom integrations, dashboards, or logging.
 
 ## Architecture
@@ -74,7 +74,7 @@ To stop: `make stop` (or `./pilot stop`). This removes hooks and kills the serve
 
 For Claude Code, the `PreToolUse` hook fires for: `Bash`, `Write`, `Edit`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Read`, `Grep`, `Glob`, and `Agent`.
 
-For Codex, Pilot installs `PreToolUse` trajectory-check hooks plus `PermissionRequest` approval hooks for `Bash`, `apply_patch`/`Edit`/`Write`, and MCP tools. It also enables Codex's `exec_permission_approvals` and `request_permissions_tool` feature flags so sandbox/network escalation prompts can flow through `PermissionRequest`. Codex `PreToolUse` can only block, so auto-approval happens in `PermissionRequest`. Set `interrogation_enabled = false` to disable the trajectory-check hook.
+For Codex, Pilot installs `PreToolUse` trajectory-check hooks plus `PermissionRequest` approval hooks for `Bash`, `apply_patch`/`Edit`/`Write`, and MCP tools. It also enables Codex's `exec_permission_approvals` and `request_permissions_tool` feature flags so sandbox/network escalation prompts can flow through `PermissionRequest`. Codex `PreToolUse` can only block, so auto-approval happens in `PermissionRequest`. The trajectory-check hook is off by default; set `interrogation_enabled = true` to enable it.
 
 When a hook fires, `pilot approve` or `pilot codex-approve` POSTs to `pilot serve`, which runs the approval hierarchy:
 
@@ -92,9 +92,9 @@ If confidence exceeds the threshold, pilot returns `{"decision": "block", "reaso
 
 ### Interrogation
 
-On the 1st, 5th, and every 25th tool call after a user message, pilot checks if the agent is still on track. If it's going in circles, doing workarounds instead of fixing root causes, or ignoring instructions, pilot denies the tool call with a redirect message.
+When enabled, on the 1st, 5th, and every 25th tool call after a user message, pilot checks if the agent is still on track. If it's going in circles, doing workarounds instead of fixing root causes, or ignoring instructions, pilot denies the tool call with a redirect message.
 
-Set `interrogation_enabled = false` in `~/.pilot/pilot.toml` to disable these PreToolUse trajectory checks without disabling approval handling.
+These PreToolUse trajectory checks are **off by default** — they add an interruption per matched call and a second hook process per tool. Set `interrogation_enabled = true` in `~/.pilot/pilot.toml` to turn them on without affecting approval handling.
 
 ## Running standalone
 
@@ -145,7 +145,7 @@ All config lives in `~/.pilot/pilot.toml`. Created automatically on first run. E
 | `input_cost_per_mtok_usd` | `1.0` | Input token price used for local spend estimates |
 | `output_cost_per_mtok_usd` | `5.0` | Output token price used for local spend estimates |
 | `interrogation_confidence` | `0.7` | Min confidence for interrogation redirects |
-| `interrogation_enabled` | `true` | Allow PreToolUse trajectory checks to redirect stuck/off-track agents |
+| `interrogation_enabled` | `false` | Allow PreToolUse trajectory checks to redirect stuck/off-track agents |
 
 ### Prompts
 
@@ -233,11 +233,15 @@ make dashboard-build    # production build
 Release tags drive installable artifacts:
 
 ```bash
-git tag v0.1.7
-git push origin v0.1.7
+git tag v0.1.16
+git push origin v0.1.16
 ```
 
-The Release workflow runs on `v*` tags and uploads the prebuilt dashboard assets that `pilot dashboard` downloads from GitHub Releases.
+The Release workflow runs on `v*` tags and uploads:
+- **CLI binaries** (`pilot-darwin-arm64`, `pilot-darwin-amd64`, `pilot-linux-amd64`, `pilot-linux-arm64`) — version-stamped via `-ldflags`, consumed by `install.sh` and `pilot upgrade`.
+- **Dashboard assets** that `pilot dashboard` downloads from GitHub Releases.
+
+`install.sh` always pulls `releases/latest/download/<asset>`, so the newest tag is what new installs and `pilot upgrade` receive.
 
 ## Runtime files
 
@@ -245,6 +249,7 @@ All runtime state is stored in `~/.pilot/` (override with `$PILOT_HOME`):
 
 ```
 ~/.pilot/
+├── bin/pilot         # installed binary (install.sh / pilot upgrade)
 ├── pilot.toml        # configuration (auto-created on first run)
 ├── state.json        # action history and stats
 ├── pilot.pid         # wrapper process ID
