@@ -41,7 +41,7 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: go build -o ${{ matrix.artifact }} .
+        run: go build -ldflags "-X github.com/NiallBrickell/pilot/cmd.Version=${{ github.ref_name }}" -o ${{ matrix.artifact }} .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
