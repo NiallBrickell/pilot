@@ -24,7 +24,8 @@ output_cost_per_mtok_usd = 5.0
 # Confidence threshold for interrogation redirects (0.0 - 1.0)
 interrogation_confidence = 0.7
 # Whether PreToolUse trajectory checks may redirect agents that appear stuck/off-track.
-interrogation_enabled = true
+# Default off: enable only if you want pilot to interrupt when an agent looks off-track.
+interrogation_enabled = false
 # Grace period before auto-approvals take effect (0 = instant)
 grace_period_s = 0
 # How long to wait for human decision on escalated calls (seconds)

@@ -11,6 +11,11 @@ import (
 func TestInstallAllAddsClaudeAndCodexHooks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	configPath := filepath.Join(home, "pilot.toml")
+	t.Setenv("PILOT_CONFIG", configPath)
+	if err := os.WriteFile(configPath, []byte("[general]\ninterrogation_enabled = true\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	existingCodex := map[string]any{
 		"hooks": map[string]any{
@@ -140,7 +145,7 @@ func TestInstallCodexOmitsStopHookWhenRepliesDisabled(t *testing.T) {
 	t.Setenv("HOME", home)
 	configPath := filepath.Join(home, "pilot.toml")
 	t.Setenv("PILOT_CONFIG", configPath)
-	if err := os.WriteFile(configPath, []byte("[general]\nstop_hook_replies = false\n"), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte("[general]\nstop_hook_replies = false\ninterrogation_enabled = true\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 

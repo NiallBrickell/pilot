@@ -109,7 +109,7 @@ func installClaudeHooks(bin string) error {
 	cfg, err := ReadPilotConfig()
 	if err != nil {
 		cfg.General.StopHookReplies = true
-		cfg.General.InterrogationEnabled = true
+		cfg.General.InterrogationEnabled = false
 	}
 	preToolUseEntries := []map[string]any{pilotPreToolUse}
 	if cfg.General.InterrogationEnabled {
@@ -143,7 +143,7 @@ func installCodexHooks(bin string) error {
 	cfg, err := ReadPilotConfig()
 	if err != nil {
 		cfg.General.StopHookReplies = true
-		cfg.General.InterrogationEnabled = true
+		cfg.General.InterrogationEnabled = false
 	}
 
 	path := codexHooksPath()

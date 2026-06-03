@@ -12,8 +12,28 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
+
+var (
+	lowBalanceMu       sync.Mutex
+	lowBalanceLastWarn time.Time
+)
+
+// warnLowBalance emits a prominent, throttled warning when the evaluator's
+// Anthropic credits are exhausted. With no credits every evaluation fails and
+// pilot falls through to asking the user about everything, so this needs to be
+// loud and distinct rather than buried among per-call warnings.
+func warnLowBalance() {
+	lowBalanceMu.Lock()
+	defer lowBalanceMu.Unlock()
+	if !lowBalanceLastWarn.IsZero() && time.Since(lowBalanceLastWarn) < 5*time.Minute {
+		return
+	}
+	lowBalanceLastWarn = time.Now()
+	slog.Error("PILOT EVALUATOR DISABLED: Anthropic credit balance too low — every tool call is now falling through to a manual approval prompt. Top up at https://console.anthropic.com/settings/billing to restore auto-approval.")
+}
 
 // Client calls the Anthropic Messages API directly.
 type Client struct {
@@ -160,7 +180,11 @@ func (c *Client) call(ctx context.Context, model, systemPrompt, userContent stri
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, Usage{}, fmt.Errorf("API returned %d: %s", resp.StatusCode, truncate(string(respBody), 500))
+		bodyStr := string(respBody)
+		if strings.Contains(bodyStr, "credit balance is too low") {
+			warnLowBalance()
+		}
+		return nil, Usage{}, fmt.Errorf("API returned %d: %s", resp.StatusCode, truncate(bodyStr, 500))
 	}
 
 	var apiResp struct {
