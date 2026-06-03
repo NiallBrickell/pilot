@@ -99,7 +99,7 @@ func InstallClaude(pilotBin string) error {
 	cfg := config.Load()
 	claudePreToolUseEntries := []map[string]any{
 		{
-			"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch|Read|Grep|Glob|Agent)$",
+			"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch|Read|Grep|Glob|Agent|mcp__.*)$",
 			"hooks": []any{
 				map[string]any{"type": "command", "command": pilotBin + " approve"},
 			},
