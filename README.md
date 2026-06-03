@@ -36,13 +36,29 @@ Claude Code / Codex session (any of 20+)
 
 ## Quick start
 
+Install the latest release binary (no Go toolchain or checkout needed):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/erdoai/pilot/main/install.sh | sh
+```
+
+This downloads the right binary for your OS/arch into `~/.pilot/bin`, installs hooks, and starts the server. Set `ANTHROPIC_API_KEY` first (or write it to `~/.pilot/.env`) — the installer tells you how if it's missing. Add `~/.pilot/bin` to your `PATH` to call `pilot` directly.
+
+To update later:
+
+```bash
+pilot upgrade        # downloads the latest release and restarts (no-op if already current)
+```
+
+Or build from source for development:
+
 ```bash
 git clone https://github.com/erdoai/pilot.git
 cd pilot
 make start
 ```
 
-That's it. `pilot start` builds, creates `~/.pilot/` with a default config, installs hooks into `~/.claude/settings.json` and `~/.codex/hooks.json`, enables Codex hooks in `~/.codex/config.toml`, and starts the server. No manual setup needed.
+Either way, `pilot start` creates `~/.pilot/` with a default config, installs hooks into `~/.claude/settings.json` and `~/.codex/hooks.json`, enables Codex hooks in `~/.codex/config.toml`, and starts the server. No manual setup needed.
 
 To stop: `make stop` (or `./pilot stop`). This removes hooks and kills the server.
 
@@ -95,6 +111,7 @@ Pilot works completely standalone — the dashboard is optional.
 |---------|-------------|
 | `pilot start` | Install hooks, start server, enable pilot |
 | `pilot stop` | Remove hooks, stop server, disable pilot |
+| `pilot upgrade` | Download the latest release binary from GitHub and restart |
 | `pilot dashboard` | Download (if needed) and launch the desktop GUI |
 | `pilot serve` | Start server in foreground (for debugging) |
 | `pilot approve` | Claude Code PreToolUse hook handler |

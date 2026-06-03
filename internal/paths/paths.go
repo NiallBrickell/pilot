@@ -31,6 +31,13 @@ func EnvFile() string            { return filepath.Join(PilotDir(), ".env") }
 func BinPathFile() string        { return filepath.Join(PilotDir(), "pilot-bin") }
 func PromptBaselineFile() string { return filepath.Join(PilotDir(), ".prompt_baseline") }
 
+// BinDir is the stable directory for the installed pilot binary (used by
+// install.sh and `pilot upgrade`), independent of any source checkout.
+func BinDir() string { return filepath.Join(PilotDir(), "bin") }
+
+// InstalledBinPath is the canonical location of the installed pilot binary.
+func InstalledBinPath() string { return filepath.Join(BinDir(), "pilot") }
+
 // RecordBinaryPath writes the resolved path of the running pilot binary to
 // ~/.pilot/pilot-bin and creates a ~/.pilot/pilot symlink so external tools
 // (like the dashboard) can find it without relying on PATH or cwd.
