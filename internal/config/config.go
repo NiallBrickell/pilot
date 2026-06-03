@@ -57,7 +57,8 @@ type GeneralConfig struct {
 }
 
 func (g GeneralConfig) IsInterrogationEnabled() bool {
-	return g.InterrogationEnabled == nil || *g.InterrogationEnabled
+	// Default off: trajectory checks only run when explicitly enabled.
+	return g.InterrogationEnabled != nil && *g.InterrogationEnabled
 }
 
 const (
