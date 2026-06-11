@@ -28,7 +28,6 @@ type PilotGeneralConfig struct {
 	InterrogationConfidence        float64 `json:"interrogation_confidence" toml:"interrogation_confidence"`
 	InterrogationEnabled           bool    `json:"interrogation_enabled" toml:"interrogation_enabled"`
 	StopHookReplies                bool    `json:"stop_hook_replies" toml:"stop_hook_replies"`
-	DeprecatedCodexStopHookReplies *bool   `json:"-" toml:"codex_stop_hook_replies,omitempty"`
 }
 
 type PilotPromptsConfig struct {
@@ -59,12 +58,10 @@ func ReadPilotConfig() (PilotConfig, error) {
 		if !md.IsDefined("general", "interrogation_enabled") {
 			cfg.General.InterrogationEnabled = true
 		}
+		// The old codex_stop_hook_replies key is deliberately ignored — it was
+		// Codex-scoped and inheriting it silently disabled Claude stop replies.
 		if !md.IsDefined("general", "stop_hook_replies") {
-			if cfg.General.DeprecatedCodexStopHookReplies != nil {
-				cfg.General.StopHookReplies = *cfg.General.DeprecatedCodexStopHookReplies
-			} else {
-				cfg.General.StopHookReplies = true
-			}
+			cfg.General.StopHookReplies = true
 		}
 	}
 	return cfg, err

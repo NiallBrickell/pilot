@@ -51,9 +51,10 @@ type GeneralConfig struct {
 	AutoApproveAll bool `toml:"auto_approve_all"`
 
 	// Whether Stop hooks may return a continuation reply (all runtimes).
+	// The old codex_stop_hook_replies key is deliberately ignored: it was
+	// Codex-scoped, so inheriting it here silently disabled Claude stop
+	// replies for configs that still carried it.
 	StopHookReplies bool `toml:"stop_hook_replies"`
-	// Deprecated: renamed to stop_hook_replies. Parsed for backward compat.
-	DeprecatedCodexStopHookReplies *bool `toml:"codex_stop_hook_replies,omitempty"`
 }
 
 func (g GeneralConfig) IsInterrogationEnabled() bool {
@@ -184,10 +185,6 @@ func applyDefaults(cfg *PilotConfig, md toml.MetaData) {
 		cfg.General.OutputCostPerMTokUSD = DefaultOutputCostPerMTokUSD
 	}
 	if !md.IsDefined("general", "stop_hook_replies") {
-		if cfg.General.DeprecatedCodexStopHookReplies != nil {
-			cfg.General.StopHookReplies = *cfg.General.DeprecatedCodexStopHookReplies
-		} else {
-			cfg.General.StopHookReplies = true
-		}
+		cfg.General.StopHookReplies = true
 	}
 }
