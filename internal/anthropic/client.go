@@ -146,9 +146,10 @@ func (c *Client) EvaluateIdle(ctx context.Context, systemPrompt, transcriptConte
 // call sends a single messages.create request and returns the raw JSON text content.
 func (c *Client) call(ctx context.Context, model, systemPrompt, userContent string, schema map[string]any) (json.RawMessage, Usage, error) {
 	body := map[string]any{
-		"model":      model,
-		"max_tokens": 512,
-		"system":     systemPrompt,
+		"model":       model,
+		"max_tokens":  512,
+		"temperature": 0, // deterministic decisions — no sampling flapping on borderline calls
+		"system":      systemPrompt,
 		"messages":   []map[string]string{{"role": "user", "content": userContent}},
 		"output_config": map[string]any{
 			"format": schema,
