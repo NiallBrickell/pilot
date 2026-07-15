@@ -487,17 +487,39 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 	s.evalSem <- struct{}{}
 	defer func() { <-s.evalSem }()
 
-	ctx, cancel := context.WithTimeout(r.Context(), s.evalTimeout)
-	defer cancel()
-
-	evalResult, err := s.ai.EvaluateApproval(ctx, cfg.Prompts.Approval, req.ToolName, req.ToolInput, model)
+	// Transient API errors (timeouts, 5xx) hit ~2% of calls — retry once with a
+	// fresh deadline before falling back.
+	var evalResult *anthropic.ApprovalResult
+	var err error
+	for attempt := range 2 {
+		if attempt > 0 {
+			slog.Warn("Anthropic API error (approval), retrying", "error", err, "tool", req.ToolName)
+			time.Sleep(300 * time.Millisecond)
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), s.evalTimeout)
+		evalResult, err = s.ai.EvaluateApproval(ctx, cfg.Prompts.Approval, req.ToolName, req.ToolInput, model)
+		cancel()
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
+		// Evaluator unavailable even after retry. Fail open rather than
+		// blocking every request on infra trouble: approve unless the command
+		// carries a danger marker, which still falls through to the user.
 		durationMs := float64(time.Since(evalStart).Microseconds()) / 1000.0
-		slog.Warn("Anthropic API error (approval)", "error", err, "duration_ms", durationMs)
+		decision := "ask"
+		reason := "pilot: evaluator unavailable and command matches danger patterns — confirm manually"
+		if approve.FailOpenDecision(req.ToolName, req.ToolInput) == "approve" {
+			decision = "approve"
+			reason = "pilot: evaluator unavailable (API error), auto-approved by fail-open rules"
+		}
+		slog.Warn("Anthropic API error (approval), failing open", "error", err, "decision", decision, "tool", req.ToolName, "duration_ms", durationMs)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"decision":    "ask",
-			"reason":      fmt.Sprintf("pilot alert: evaluation failed (%v)", err),
+			"decision":    decision,
+			"reason":      reason,
+			"source":      "fail_open",
 			"duration_ms": durationMs,
 			"tool_name":   req.ToolName,
 			"cwd":         req.Cwd,

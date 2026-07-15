@@ -3,6 +3,7 @@
 package approve
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -66,6 +67,30 @@ func bashCommandDecision(command string) string {
 	guard := strings.ReplaceAll(lower, "--force-with-lease", "")
 	if dangerBashRe.MatchString(guard) {
 		return "" // chain contains something destructive — let the LLM decide
+	}
+	return "approve"
+}
+
+// FailOpenDecision decides a tool call when the LLM evaluator is unavailable
+// (API timeout/outage, even after retry). Pilot degrades to deny-list mode
+// rather than blocking every request on transient infra trouble: approve
+// unless the command carries a known danger marker. Bash commands matching
+// dangerBashRe — and bash input we can't extract a command from — still ask.
+func FailOpenDecision(toolName, toolInput string) string {
+	if !bashTools[toolName] {
+		return "approve"
+	}
+	var parsed map[string]any
+	if len(toolInput) > 0 && toolInput[0] == '{' {
+		_ = json.Unmarshal([]byte(toolInput), &parsed)
+	}
+	cmd := extractBashCommand(parsed)
+	if cmd == "" {
+		return "ask" // can't inspect the command — stay conservative
+	}
+	guard := strings.ReplaceAll(strings.ToLower(cmd), "--force-with-lease", "")
+	if dangerBashRe.MatchString(guard) {
+		return "ask"
 	}
 	return "approve"
 }

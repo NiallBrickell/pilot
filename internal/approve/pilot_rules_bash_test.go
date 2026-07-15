@@ -48,6 +48,39 @@ func TestBashCommandDecision(t *testing.T) {
 	}
 }
 
+// TestFailOpenDecision pins the degraded mode used when the LLM evaluator is
+// unreachable: everything approves except bash commands with danger markers
+// (and bash input we can't read a command out of), which still ask.
+func TestFailOpenDecision(t *testing.T) {
+	cases := []struct {
+		name      string
+		toolName  string
+		toolInput string
+		want      string
+	}{
+		{"routine bash", "Bash", `{"command":"cd /tmp/x && ls -la && cat package.json"}`, "approve"},
+		{"go test", "Bash", `{"command":"go test ./..."}`, "approve"},
+		{"force-with-lease ok", "Bash", `{"command":"git push --force-with-lease origin feat/x"}`, "approve"},
+		{"rm -rf asks", "Bash", `{"command":"rm -rf /tmp/junk"}`, "ask"},
+		{"force push asks", "Bash", `{"command":"git push --force origin main"}`, "ask"},
+		{"gh pr merge asks", "Bash", `{"command":"gh pr merge 5 --squash"}`, "ask"},
+		{"danger smuggled in chain", "Bash", `{"command":"ls && git reset --hard HEAD~3"}`, "ask"},
+		{"unreadable bash input asks", "Bash", `{"weird":"shape"}`, "ask"},
+		{"non-json bash input asks", "Bash", `not json`, "ask"},
+		{"codex shell", "shell", `{"argv":["git","status"]}`, "approve"},
+		{"read tool approves", "Read", `{"file_path":"/etc/hosts"}`, "approve"},
+		{"edit tool approves", "Edit", `{"file_path":"/tmp/x/main.go"}`, "approve"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FailOpenDecision(tc.toolName, tc.toolInput); got != tc.want {
+				t.Errorf("FailOpenDecision(%q, %q) = %q, want %q", tc.toolName, tc.toolInput, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestExtractBashCommand(t *testing.T) {
 	if got := extractBashCommand(map[string]any{"command": "git push"}); got != "git push" {
 		t.Errorf("command string: got %q", got)
