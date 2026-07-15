@@ -103,8 +103,10 @@ func (c *Client) EvaluateApproval(ctx context.Context, systemPrompt, toolName, t
 
 	raw, usage, err := c.call(ctx, model, systemPrompt, userContent, approvalSchema)
 	if err != nil {
-		slog.Warn("Anthropic API error (approval)", "error", err)
-		return &ApprovalResult{Decision: Deny, Reason: fmt.Sprintf("error: %v", err)}, nil
+		// Infra failure, not a verdict — the caller decides the fallback.
+		// Returning a fabricated Deny here used to block sessions with the raw
+		// error text as the escalation reason.
+		return nil, err
 	}
 
 	var parsed struct {
@@ -112,7 +114,7 @@ func (c *Client) EvaluateApproval(ctx context.Context, systemPrompt, toolName, t
 		Reason   string `json:"reason"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return &ApprovalResult{Decision: Deny, Reason: fmt.Sprintf("parse error: %v", err), Usage: usage}, nil
+		return nil, fmt.Errorf("parse approval response: %w", err)
 	}
 
 	decision := Deny

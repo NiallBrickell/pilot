@@ -162,7 +162,10 @@ func evaluateViaServer(cfg *config.PilotConfig, runtime hookRuntime, toolName, t
 		"user_msg_hash":   userMsgHash,
 	})
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Must outlast serve's worst case: two evaluator attempts at evaluator_timeout_ms
+	// (default 15s) plus retry backoff. If this fires first the hook falls back to
+	// the unconditional "serve not running" allow, skipping the danger-marker check.
+	client := &http.Client{Timeout: 45 * time.Second}
 	resp, err := client.Post(config.SSEBaseURL(cfg)+"/internal/evaluate", "application/json", bytes.NewReader(body))
 	if err != nil {
 		slog.Debug("Serve not reachable, falling back to local eval", "error", err)
