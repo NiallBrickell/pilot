@@ -170,6 +170,61 @@ func TestInstallCodexOmitsStopHookWhenRepliesDisabled(t *testing.T) {
 	}
 }
 
+func TestInstallCodexSetsApprovalsReviewer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(home, "pilot.toml")
+	t.Setenv("PILOT_CONFIG", configPath)
+	if err := os.WriteFile(configPath, []byte("[general]\ninterrogation_enabled = false\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-existing Codex config with a top-level key and a table, mirroring a
+	// real ~/.codex/config.toml so we verify both are preserved.
+	codexConfig := "model = \"gpt-5.6-sol\"\n\n[projects.\"/tmp/x\"]\ntrust_level = \"trusted\"\n"
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(codexConfig), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := InstallCodex("/tmp/pilot"); err != nil {
+		t.Fatal(err)
+	}
+
+	read := func() string {
+		data, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	got := read()
+	if !strings.Contains(got, `approvals_reviewer = "auto_review"`) {
+		t.Fatalf("approvals_reviewer not set:\n%s", got)
+	}
+	if !strings.Contains(got, `model = "gpt-5.6-sol"`) {
+		t.Fatalf("existing top-level key not preserved:\n%s", got)
+	}
+	if !strings.Contains(got, `[projects."/tmp/x"]`) {
+		t.Fatalf("existing table not preserved:\n%s", got)
+	}
+	// The key must sit above the first table header (valid TOML).
+	if idx := strings.Index(got, "approvals_reviewer"); idx == -1 || idx > strings.Index(got, "[projects") {
+		t.Fatalf("approvals_reviewer must precede the first table header:\n%s", got)
+	}
+
+	// Idempotent: a second install must not duplicate the key.
+	if err := InstallCodex("/tmp/pilot"); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(read(), "approvals_reviewer"); n != 1 {
+		t.Fatalf("approvals_reviewer written %d times, want 1:\n%s", n, read())
+	}
+}
+
 func TestInstallAllOmitsInterrogationHooksWhenDisabled(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
