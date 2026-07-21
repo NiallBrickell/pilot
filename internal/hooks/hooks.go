@@ -175,6 +175,9 @@ func InstallCodex(pilotBin string) error {
 	if err := ensureCodexFeatures(CodexConfigPath()); err != nil {
 		return err
 	}
+	if err := ensureCodexApprovalReviewer(CodexConfigPath()); err != nil {
+		return err
+	}
 	cfg := config.Load()
 
 	path := CodexHooksPath()
@@ -496,6 +499,73 @@ func ensureCodexFeatures(path string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(strings.Join(out, "\n")+"\n"), 0600)
+}
+
+// codexApprovalsReviewer is the routing target for Codex's escalation-approval
+// surface — sandbox escapes, blocked network access, MCP approval prompts, and
+// ARC escalations. This is SEPARATE from the PermissionRequest hook: those
+// escalations never reach the hook (Codex offers no hook target for them; the
+// only values are "user", "auto_review", and "guardian_subagent"). Left at its
+// default of "user", every sandbox escape — e.g. a `git worktree` that needs to
+// write to the main repo's .git common-dir outside the workspace root — prompts
+// the human, even though the PermissionRequest hook auto-approves the command
+// itself. "auto_review" routes those escalations to Codex's own risk-scoring
+// subagent so routine escapes proceed without a prompt, while the sandbox stays
+// a real boundary. Pilot owns this policy centrally so `pilot upgrade` rolls it
+// out across every machine.
+const codexApprovalsReviewer = "auto_review"
+
+// ensureCodexApprovalReviewer sets the top-level `approvals_reviewer` key in
+// Codex's config.toml, preserving the rest of the file. TOML requires top-level
+// keys before the first table header, so the key is written into that region.
+func ensureCodexApprovalReviewer(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	const key = "approvals_reviewer"
+	line := fmt.Sprintf("%s = %q", key, codexApprovalsReviewer)
+
+	lines := strings.Split(string(data), "\n")
+
+	// The top-level region is everything before the first table header.
+	topEnd := len(lines)
+	for i, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			topEnd = i
+			break
+		}
+	}
+
+	// Replace an existing assignment in place if present.
+	for i := 0; i < topEnd; i++ {
+		if k, ok := codexFeatureAssignmentKey(strings.TrimSpace(lines[i])); ok && k == key {
+			lines[i] = line
+			return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600)
+		}
+	}
+
+	// Otherwise insert after the last non-blank top-level line so the key stays
+	// above the first table header.
+	insertAt := topEnd
+	for insertAt > 0 && strings.TrimSpace(lines[insertAt-1]) == "" {
+		insertAt--
+	}
+	out := make([]string, 0, len(lines)+1)
+	out = append(out, lines[:insertAt]...)
+	out = append(out, line)
+	out = append(out, lines[insertAt:]...)
+
+	content := strings.Join(out, "\n")
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(content), 0600)
 }
 
 func appendMissingCodexFeatures(out []string, required []string, seen map[string]bool) []string {
