@@ -1,0 +1,30 @@
+# Every prompt-section hash pilot has ever shipped, oldest first.
+#
+# The upgrade mechanism uses this to tell "user wrote their own prompts" apart
+# from "user is on an older default". Without it, any drift between
+# ~/.pilot/.prompt_baseline and the config file — a dashboard save, a hand-copied
+# config, an upgrade that predates the baseline file — latches the install into
+# "customised" forever, and no future default ever reaches the evaluator again.
+#
+# When you change [prompts] in pilot.toml, append the new hash here. The test in
+# config_test.go fails until you do. To compute it:
+#
+#     go test ./internal/config -run TestEmbeddedPromptHashIsRecorded -v
+#
+# The failure message prints the hash to append.
+
+87c21f0ae9a81a6e92700b958af1151d6a4061ec3109ade9f96ea49920eba16c
+d98b403c85686f49242d046ccfe072b1d06f6907eadb664b2821c5f03a8a6da9
+ea71beecf2f0d55e5fa394b23239ecbe6e94c2914a35cfa36e50ac20e3c2d0ed
+8995acbd2462eff0e272f6a5fd60c5974bd296dbbf0ebb43a7f38ebc91921343
+c9607f0b5f98329bed796190fa33116347dea68a755b633bbefafc8793a3bf0d
+b6a1e6824e91b6c2d685e39eca267cf79bd34159dab230e083eb3fe63b23d3c7
+c95f9ea34dabe78f4483d6b86421ce36e38260aaaacc925f47e9ce942d145d82
+b12e4808754340cd66f8a847dca7ccf61ee80c3bd0aaf65ba37d610f7b6cacbf
+90e9108ec817ebb0642edda0dccc1a29184344f88d5f084d64bda07cdcf34717
+63441cd3cf4dece49aa2e5b9c43d9ede16e79c4c27a1ccd0b8fe8459f0aa5e82
+fa12963638711bdb082928820c2fd87661b95eeaa6bb98ce967820b85f9119e8
+d7a67773b60e411d1a28a25b07ba9ccbfd0b0a4f875c00f34f992100fbbf41e9
+f621bcdf9e62a36187b5e9d31af0e78ce17ff5e05f75f652cc8bd1a0401f0f91
+5a4b6ed6a6a38bab919b33c8b3e0718950cf23fdf1fb170303a1349bb540f7cd
+c3dd3763e27babf3da1f7fd7f4cc0eaa41236113c0909c61df6ea3989f7d1d9e

@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,9 +15,27 @@ import (
 //go:embed pilot.toml
 var embeddedConfig string
 
+//go:embed prompt_history.txt
+var promptHistory string
+
 // EmbeddedConfig returns the compiled-in default config for auto-setup.
 func EmbeddedConfig() string {
 	return embeddedConfig
+}
+
+// ShippedPromptHashes returns the prompt hash of every default pilot has ever
+// shipped. Prompts matching one of these are an unmodified old default, not a
+// user customisation, so they stay eligible for upgrade.
+func ShippedPromptHashes() []string {
+	var hashes []string
+	for line := range strings.SplitSeq(promptHistory, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		hashes = append(hashes, line)
+	}
+	return hashes
 }
 
 type PilotConfig struct {

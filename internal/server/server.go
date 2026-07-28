@@ -1055,7 +1055,7 @@ func (s *Server) handlePromptsStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	status, err := paths.PromptsStatusOf(config.EmbeddedConfig())
+	status, err := paths.PromptsStatusOf(config.EmbeddedConfig(), config.ShippedPromptHashes())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1080,7 +1080,7 @@ func (s *Server) handleResetPrompts(w http.ResponseWriter, r *http.Request) {
 	if result.Upgraded {
 		slog.Info("Prompts reset to embedded default", "backup", result.BackupPath)
 	}
-	status, _ := paths.PromptsStatusOf(config.EmbeddedConfig())
+	status, _ := paths.PromptsStatusOf(config.EmbeddedConfig(), config.ShippedPromptHashes())
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"upgraded":    result.Upgraded,

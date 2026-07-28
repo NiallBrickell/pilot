@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -96,18 +97,25 @@ type UpgradeResult struct {
 }
 
 // UpgradeDefaults re-writes ~/.pilot/pilot.toml with the embedded default IFF
-// the user hasn't touched the prompts section since we last recorded a baseline.
-// Called at serve startup — not on the hot approval path.
+// the user hasn't written their own prompts. shippedHashes lists the prompt
+// hash of every default pilot has released; prompts matching one of them are an
+// old default rather than a customisation. Called at serve startup — not on the
+// hot approval path.
 //
 // Behaviour:
 //   - No config file yet → no-op (EnsureSetup handles initial write).
-//   - No baseline recorded yet → bootstrap: record current prompt hash as baseline,
-//     don't upgrade (we can't tell "old default" from "user edit" without history).
-//   - Current prompts match baseline but differ from embedded → user hasn't edited,
-//     embedded default changed, upgrade. Backs up the old file first.
-//   - Current prompts don't match baseline → user has customised, leave alone.
 //   - Current prompts match embedded → already on latest, refresh baseline if drifted.
-func UpgradeDefaults(embeddedConfig string) (UpgradeResult, error) {
+//   - Current prompts match baseline OR any shipped default → user hasn't edited,
+//     upgrade. Backs up the old file first.
+//   - No baseline recorded and prompts match nothing we shipped → bootstrap:
+//     record the current hash so future default changes flow through.
+//   - Otherwise → user has customised, leave alone.
+//
+// The shippedHashes check is what keeps a baseline that has drifted from the
+// config file (a dashboard save, a hand-copied config, an install predating the
+// baseline file) from latching the user into "customised" forever, which
+// silently pins their evaluator to whatever prompt they had at the time.
+func UpgradeDefaults(embeddedConfig string, shippedHashes []string) (UpgradeResult, error) {
 	cfgPath := ConfigFile()
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -128,19 +136,11 @@ func UpgradeDefaults(embeddedConfig string) (UpgradeResult, error) {
 
 	baselinePath := PromptBaselineFile()
 	baselineBytes, err := os.ReadFile(baselinePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Bootstrap: record current user prompts as baseline. Future default
-			// changes will flow through iff the user doesn't edit the prompts
-			// between now and then.
-			if writeErr := os.WriteFile(baselinePath, []byte(userHash), 0644); writeErr != nil {
-				return UpgradeResult{}, writeErr
-			}
-			return UpgradeResult{Reason: "bootstrapped"}, nil
-		}
+	if err != nil && !os.IsNotExist(err) {
 		return UpgradeResult{}, err
 	}
 	baseline := string(trimWhitespace(baselineBytes))
+	haveBaseline := err == nil
 
 	if userHash == embeddedHash {
 		if baseline != embeddedHash {
@@ -149,11 +149,25 @@ func UpgradeDefaults(embeddedConfig string) (UpgradeResult, error) {
 		return UpgradeResult{Reason: "up_to_date"}, nil
 	}
 
-	if baseline != userHash {
-		return UpgradeResult{Reason: "user_customised"}, nil
+	if baseline == userHash || isShippedPrompt(userHash, shippedHashes) {
+		return applyEmbeddedPrompts(data, embeddedConfig, embeddedHash, "pre-upgrade")
 	}
 
-	return applyEmbeddedPrompts(data, embeddedConfig, embeddedHash, "pre-upgrade")
+	if !haveBaseline {
+		// Prompts we've never shipped and no baseline to compare against — can't
+		// tell an old default from an edit, so record it and upgrade next time.
+		if writeErr := os.WriteFile(baselinePath, []byte(userHash), 0644); writeErr != nil {
+			return UpgradeResult{}, writeErr
+		}
+		return UpgradeResult{Reason: "bootstrapped"}, nil
+	}
+
+	return UpgradeResult{Reason: "user_customised"}, nil
+}
+
+// isShippedPrompt reports whether hash matches a default pilot has released.
+func isShippedPrompt(hash string, shippedHashes []string) bool {
+	return slices.Contains(shippedHashes, hash)
 }
 
 // PromptsState describes the relationship between user prompts and embedded default.
@@ -178,7 +192,7 @@ type PromptsStatus struct {
 
 // PromptsStatusOf reports whether the user's prompts match the embedded default,
 // differ but are upgrade-eligible (behind), or have been customised.
-func PromptsStatusOf(embeddedConfig string) (PromptsStatus, error) {
+func PromptsStatusOf(embeddedConfig string, shippedHashes []string) (PromptsStatus, error) {
 	data, err := os.ReadFile(ConfigFile())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -207,10 +221,10 @@ func PromptsStatusOf(embeddedConfig string) (PromptsStatus, error) {
 	switch {
 	case userHash == embeddedHash:
 		status.State = PromptsUpToDate
+	case baseline == userHash || isShippedPrompt(userHash, shippedHashes):
+		status.State = PromptsBehind
 	case baseline == "":
 		status.State = PromptsBootstrapped
-	case baseline == userHash:
-		status.State = PromptsBehind
 	default:
 		status.State = PromptsCustomised
 	}
@@ -329,6 +343,10 @@ func extractSection(s, name string) (start, end int, ok bool) {
 	}
 	return 0, 0, false
 }
+
+// PromptHashFromTOML returns the hash identifying a config's [prompts] section,
+// the identity the upgrade mechanism and prompt_history.txt are keyed on.
+func PromptHashFromTOML(s string) (string, error) { return promptHashFromTOML(s) }
 
 func promptHashFromTOML(s string) (string, error) {
 	var t struct {

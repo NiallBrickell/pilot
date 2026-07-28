@@ -29,10 +29,15 @@ func init() {
 func runServe(cmd *cobra.Command, args []string) error {
 	embedded := config.EmbeddedConfig()
 	paths.EnsureSetup(embedded)
-	if result, err := paths.UpgradeDefaults(embedded); err != nil {
+	if result, err := paths.UpgradeDefaults(embedded, config.ShippedPromptHashes()); err != nil {
 		slog.Warn("Default prompt upgrade check failed", "error", err)
 	} else if result.Upgraded {
 		slog.Info("Upgraded pilot.toml to new default prompts", "backup", result.BackupPath)
+	} else if result.Reason == "user_customised" {
+		// Loud, because this is the state where new default prompts silently
+		// stop reaching the evaluator. Run `pilot prompts reset` to opt back in.
+		slog.Warn("pilot.toml has custom prompts — new default prompts will NOT be applied",
+			"config", paths.ConfigFile(), "fix", "pilot prompts reset")
 	} else {
 		slog.Debug("Default prompt upgrade check", "reason", result.Reason)
 	}
