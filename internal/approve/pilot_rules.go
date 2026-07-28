@@ -22,6 +22,25 @@ var bashTools = map[string]bool{
 	"Bash": true, "shell": true, "local_shell": true,
 }
 
+// webTools read from the network without sending anything of the user's: a
+// fetch is a GET of a URL the agent already knows, a search is a query string.
+// The evaluator judged these on the *content* at the far end — refusing to read
+// a vendor's API docs or terms page as "scraping", "PII harvesting" or
+// "reconnaissance" — which is not a decision about the user's data or machine
+// at all. Deciding them here keeps that judgment out of the loop entirely.
+var webTools = map[string]bool{
+	"WebFetch": true, "WebSearch": true, "web_search": true, "web_fetch": true,
+}
+
+// exfilSinkRe matches hosts that exist to capture whatever is sent to them.
+// Fetching one is the single shape of web read that can carry data OUT, so it
+// still goes to the LLM. Every other URL is a plain read.
+var exfilSinkRe = regexp.MustCompile(`webhook\.site|requestbin|pipedream\.net|beeceptor|` +
+	`ngrok\.io|ngrok-free\.app|trycloudflare\.com|` +
+	`burpcollaborator|interact\.sh|oastify|canarytokens|` +
+	`pastebin\.com|paste\.ee|hastebin|ghostbin|termbin|` +
+	`transfer\.sh|0x0\.st|file\.io|anonfiles`)
+
 // safeBashCommandRe matches commands that are routine and safe but which the
 // haiku evaluator intermittently over-denies by over-extrapolating from the
 // deny list (e.g. confusing `gh pr create` with `gh pr merge`, or a plain
@@ -32,9 +51,16 @@ var bashTools = map[string]bool{
 // Note the explicit gh-pr subcommand allowlist: `merge` is deliberately absent
 // (it must keep reaching the LLM, which denies it), and `git merge-base` is
 // distinct from the denied `git merge`.
+//
+// `git rebase` and `git reset` are here because the evaluator kept denying them
+// by analogy to the deny list despite that list calling itself exhaustive. Both
+// are safe to fast-approve only because dangerBashRe below still catches the one
+// irreversible form, `git reset --hard`, and sends it to the LLM.
 var safeBashCommandRe = regexp.MustCompile(`(?:^|[^a-z])gh pr (?:create|close|reopen|view|list|diff|checkout|comment|edit|ready|review|status)\b` +
 	`|(?:^|[^a-z-])git push\b` +
-	`|(?:^|[^a-z-])git merge-base\b`)
+	`|(?:^|[^a-z-])git merge-base\b` +
+	`|(?:^|[^a-z-])git rebase\b` +
+	`|(?:^|[^a-z-])git reset\b`)
 
 // dangerBashRe is a broad guard: if a command contains ANY of these markers we
 // refuse to fast-approve it and fall through to the LLM (preserving every
@@ -106,6 +132,13 @@ func CheckPilotRules(cfg *config.PilotConfig, toolName string, parsed map[string
 		return "" // can't read the command — fall through
 	}
 
+	if webTools[toolName] {
+		if u := extractURL(parsed); u != "" && exfilSinkRe.MatchString(strings.ToLower(u)) {
+			return "" // a capture endpoint — the LLM should look at this one
+		}
+		return "approve"
+	}
+
 	if !readOnlyTools[toolName] {
 		return "" // Not a read-only tool — fall through
 	}
@@ -156,6 +189,20 @@ func extractBashCommand(parsed map[string]any) string {
 			if len(parts) > 0 {
 				return strings.Join(parts, " ")
 			}
+		}
+	}
+	return ""
+}
+
+// extractURL pulls the target URL from pre-parsed web tool input. WebSearch
+// carries a query rather than a URL, so it returns "" and the call is approved.
+func extractURL(parsed map[string]any) string {
+	if parsed == nil {
+		return ""
+	}
+	for _, key := range []string{"url", "URL"} {
+		if u, ok := parsed[key].(string); ok && u != "" {
+			return u
 		}
 	}
 	return ""

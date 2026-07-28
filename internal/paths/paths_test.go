@@ -149,13 +149,17 @@ old auto_respond
 	// Bootstrap the baseline as if this user pre-dates the upgrade feature.
 	_ = os.Remove(PromptBaselineFile())
 
-	// First upgrade call — bootstraps baseline.
-	res, err := UpgradeDefaults(oldEmbedded)
+	// First upgrade call — records the baseline. Nothing to upgrade yet: the
+	// prompts already are this build's default, so that hash becomes the baseline.
+	res, err := UpgradeDefaults(oldEmbedded, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Upgraded || res.Reason != "bootstrapped" {
-		t.Fatalf("expected bootstrap, got %+v", res)
+	if res.Upgraded || res.Reason != "up_to_date" {
+		t.Fatalf("expected up_to_date, got %+v", res)
+	}
+	if b, _ := os.ReadFile(PromptBaselineFile()); len(b) == 0 {
+		t.Fatal("baseline not recorded")
 	}
 
 	// New default ships. Prompts change; general too.
@@ -171,7 +175,7 @@ auto_respond = """
 new auto_respond
 """
 `
-	res, err = UpgradeDefaults(newEmbedded)
+	res, err = UpgradeDefaults(newEmbedded, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +219,7 @@ auto_respond = "v2"
 `
 
 	// No config yet → no_config.
-	if s, _ := PromptsStatusOf(embedded); s.State != PromptsNoConfig {
+	if s, _ := PromptsStatusOf(embedded, nil); s.State != PromptsNoConfig {
 		t.Fatalf("expected no_config, got %q", s.State)
 	}
 
@@ -230,7 +234,7 @@ auto_respond = "v1"
 	if err := os.WriteFile(ConfigFile(), []byte(oldUserConfig), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := PromptsStatusOf(embedded); s.State != PromptsBootstrapped {
+	if s, _ := PromptsStatusOf(embedded, nil); s.State != PromptsBootstrapped {
 		t.Fatalf("expected bootstrapped, got %q", s.State)
 	}
 
@@ -239,7 +243,7 @@ auto_respond = "v1"
 	if err := os.WriteFile(PromptBaselineFile(), []byte(v1Hash), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := PromptsStatusOf(embedded); s.State != PromptsBehind {
+	if s, _ := PromptsStatusOf(embedded, nil); s.State != PromptsBehind {
 		t.Fatalf("expected behind, got %q", s.State)
 	}
 
@@ -248,7 +252,7 @@ auto_respond = "v1"
 	if err := os.WriteFile(ConfigFile(), []byte(editedConfig), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := PromptsStatusOf(embedded); s.State != PromptsCustomised {
+	if s, _ := PromptsStatusOf(embedded, nil); s.State != PromptsCustomised {
 		t.Fatalf("expected customised, got %q", s.State)
 	}
 
@@ -256,7 +260,7 @@ auto_respond = "v1"
 	if err := os.WriteFile(ConfigFile(), []byte(embedded), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := PromptsStatusOf(embedded); s.State != PromptsUpToDate {
+	if s, _ := PromptsStatusOf(embedded, nil); s.State != PromptsUpToDate {
 		t.Fatalf("expected up_to_date, got %q", s.State)
 	}
 }
@@ -300,7 +304,7 @@ auto_respond = "default auto_respond"
 	}
 
 	// Status should now report up_to_date and baseline should match embedded.
-	status, _ := PromptsStatusOf(embedded)
+	status, _ := PromptsStatusOf(embedded, nil)
 	if status.State != PromptsUpToDate {
 		t.Fatalf("expected up_to_date after reset, got %q", status.State)
 	}
@@ -331,7 +335,7 @@ auto_respond = "v1"
 approval = "v2"
 auto_respond = "v2"
 `
-	res, err := UpgradeDefaults(newEmbedded)
+	res, err := UpgradeDefaults(newEmbedded, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,5 +350,108 @@ auto_respond = "v2"
 	out, _ := os.ReadFile(ConfigFile())
 	if !strings.Contains(string(out), "MY CUSTOM PROMPT") {
 		t.Fatalf("user's custom prompt overwritten:\n%s", string(out))
+	}
+}
+
+// TestUpgradeDefaults_HealsDriftedBaseline covers the failure this whole
+// mechanism exists to survive: the config file moved to a newer default while
+// .prompt_baseline stayed behind (a dashboard save, a hand-copied config, an
+// install predating the baseline file). The user never edited a prompt, but
+// baseline != userHash, so they read as "customised" and every later default is
+// silently withheld — which is how an install ends up pinned to a months-old
+// prompt no matter how many times the default is fixed.
+func TestUpgradeDefaults_HealsDriftedBaseline(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PILOT_HOME", dir)
+
+	v1 := `[prompts]
+approval = "v1"
+auto_respond = "v1"
+`
+	v2 := `[prompts]
+approval = "v2"
+auto_respond = "v2"
+`
+	v3 := `[general]
+sse_port = 9999
+
+[prompts]
+approval = "v3"
+auto_respond = "v3"
+`
+	v1Hash, _ := promptHashFromTOML(v1)
+	v2Hash, _ := promptHashFromTOML(v2)
+
+	// On disk: the v2 default. Baseline: still v1.
+	if err := os.WriteFile(ConfigFile(), []byte(v2), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(PromptBaselineFile(), []byte(v1Hash), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without the shipped history there's nothing to distinguish this from a
+	// real edit, so it stays put — the old, broken behaviour.
+	res, err := UpgradeDefaults(v3, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Reason != "user_customised" {
+		t.Fatalf("expected user_customised without history, got %+v", res)
+	}
+
+	// Knowing v2 is one of ours, the drift is recognised and v3 is applied.
+	shipped := []string{v1Hash, v2Hash}
+	if s, _ := PromptsStatusOf(v3, shipped); s.State != PromptsBehind {
+		t.Fatalf("expected behind, got %q", s.State)
+	}
+	res, err = UpgradeDefaults(v3, shipped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Upgraded {
+		t.Fatalf("expected upgrade, got %+v", res)
+	}
+
+	out, _ := os.ReadFile(ConfigFile())
+	if !strings.Contains(string(out), `approval = "v3"`) {
+		t.Fatalf("prompts not upgraded:\n%s", string(out))
+	}
+
+	// Baseline is realigned, so the next default flows through normally.
+	baseline, _ := os.ReadFile(PromptBaselineFile())
+	v3Hash, _ := promptHashFromTOML(v3)
+	if string(baseline) != v3Hash {
+		t.Fatalf("baseline not realigned: got %q want %q", string(baseline), v3Hash)
+	}
+}
+
+// TestUpgradeDefaults_UpgradesUnbaselinedShippedDefault covers an install that
+// has no baseline at all but is sitting on a default we recognise: it should
+// upgrade immediately rather than burning a run on bootstrapping.
+func TestUpgradeDefaults_UpgradesUnbaselinedShippedDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PILOT_HOME", dir)
+
+	v1 := `[prompts]
+approval = "v1"
+auto_respond = "v1"
+`
+	v2 := `[prompts]
+approval = "v2"
+auto_respond = "v2"
+`
+	if err := os.WriteFile(ConfigFile(), []byte(v1), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(PromptBaselineFile())
+
+	v1Hash, _ := promptHashFromTOML(v1)
+	res, err := UpgradeDefaults(v2, []string{v1Hash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Upgraded {
+		t.Fatalf("expected upgrade, got %+v", res)
 	}
 }

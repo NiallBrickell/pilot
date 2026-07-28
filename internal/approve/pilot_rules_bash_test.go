@@ -21,6 +21,11 @@ func TestBashCommandDecision(t *testing.T) {
 		{"git push force-with-lease", `git push --force-with-lease origin feat/x`, "approve"},
 		{"git push token url", `git push https://x-access-token:ghp_abc@github.com/o/r.git HEAD`, "approve"},
 		{"git merge-base is-ancestor", `git log --oneline -1 && git merge-base --is-ancestor 891abc HEAD`, "approve"},
+		{"git rebase onto main", `cd /tmp/x && git rebase origin/main`, "approve"},
+		{"git rebase continue", `git add -A && git rebase --continue`, "approve"},
+		{"git rebase abort", `git rebase --abort`, "approve"},
+		{"git reset soft", `git reset --soft origin/main && git status --short`, "approve"},
+		{"git reset mixed path", `git reset HEAD backend/x.go`, "approve"},
 
 		// --- Genuinely dangerous: must fall through to the LLM ("") ---
 		{"gh pr merge", `gh pr merge 1070 --merge`, ""},
@@ -30,6 +35,8 @@ func TestBashCommandDecision(t *testing.T) {
 		{"git push force", `git push --force origin main`, ""},
 		{"git push -f", `git push -f origin main`, ""},
 		{"git reset hard before push", `git reset --hard HEAD~1 && git push --force-with-lease`, ""},
+		{"git reset hard alone", `git reset --hard origin/main`, ""},
+		{"git rebase then reset hard", `git rebase origin/main || git reset --hard ORIG_HEAD`, ""},
 		{"rm -rf alongside push", `git push origin x && rm -rf /tmp/junk`, ""},
 		{"terraform apply", `terraform apply -auto-approve -target=x`, ""},
 
