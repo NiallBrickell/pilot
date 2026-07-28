@@ -228,9 +228,45 @@ make dashboard-dev      # dev mode with hot reload
 make dashboard-build    # production build
 ```
 
+### Changing the approval prompt
+
+The prompt in `internal/config/pilot.toml` is the whole product, and a regression
+in it is invisible: the build passes, the tests pass, and the only symptom is the
+evaluator denying routine work weeks later. Two rules keep that from happening.
+
+**Record the hash.** Append the new prompt hash to `internal/config/prompt_history.txt`
+whenever you change `[prompts]`. `go test ./internal/config` fails until you do, and
+prints the line to add. Installs whose prompts match a recorded hash are treated as
+an old default rather than a user edit, so they keep receiving upgrades — without
+this, one config write that skips the baseline pins that machine to its current
+prompt forever.
+
+**Replay before shipping.** `make replay` runs ~40 real escalated tool calls
+(pulled from live `pilot.db` history) through the evaluator and reports every
+verdict that lands the wrong way:
+
+```
+41/41 correct (11 settled by pilot rules, 30 by the evaluator)
+```
+
+It costs a few cents per run, so it isn't in CI — `make release` runs it instead,
+which is the point where a bad prompt would reach users. Add a case to
+`replay_corpus_test.go` whenever you fix a false positive, taking the command
+verbatim from the escalation that caused it.
+
+Haiku reads the deny list very literally. "`rm -rf` where the path starts with `/`"
+was read as covering plain `rm a.md b.md`, and "a destination the user has no
+relationship with" as covering a bare `IP:port` database host. Reasoning about the
+wording is not a substitute for replaying it.
+
 ### Releasing
 
-Release tags drive installable artifacts:
+```bash
+make release VERSION=v0.1.29
+```
+
+That runs the unit tests, replays the approval corpus, then tags and pushes.
+Equivalent by hand:
 
 ```bash
 git tag v0.1.16
