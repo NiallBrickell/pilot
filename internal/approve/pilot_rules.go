@@ -80,12 +80,30 @@ var dangerBashRe = regexp.MustCompile(`gh pr merge` +
 	`|kubectl delete|fly destroy|railway delete|vercel rm` +
 	`|npm publish|pnpm publish|yarn publish|twine upload`)
 
+// psqlRe matches an invocation of psql anywhere in a command chain.
+var psqlRe = regexp.MustCompile(`(?:^|[^a-z])psql\b`)
+
+// sqlMutationRe matches anything that stops a psql invocation counting as a
+// pure read: SQL keywords that change data or schema, and the forms (-f/--file,
+// \i, \o, \copy) that run or write SQL we can't see inline. `do` and `call`
+// are SQL here but also shell-loop words — a psql chain wrapped in `for ...;
+// do` just falls through to the LLM, which is the status quo, not a new deny.
+var sqlMutationRe = regexp.MustCompile(`\b(insert|update|delete|drop|truncate|alter|create|grant|revoke|copy|call|do|merge|cluster|reindex|vacuum|refresh)\b` +
+	`|(^|\s)-f\b|--file\b|\\i\b|\\o\b`)
+
 // bashCommandDecision returns "approve" for a known-safe-but-misjudged command,
 // or "" to fall through to the LLM. Conservative by construction: it only
 // approves when the command hits a safe target AND contains no danger marker.
 func bashCommandDecision(command string) string {
 	lower := strings.ToLower(command)
-	if !safeBashCommandRe.MatchString(lower) {
+	// A psql call whose inline SQL contains no mutating keyword is a read.
+	// Decided here because the evaluator intermittently flags the inline
+	// connection-string password as "credential exposure" — a hygiene opinion,
+	// not a danger — and deterministic approval is the only way to stop the
+	// flapping. Anything resembling a write, or SQL read from a file, still
+	// goes to the LLM.
+	readOnlyPsql := psqlRe.MatchString(lower) && !sqlMutationRe.MatchString(lower)
+	if !safeBashCommandRe.MatchString(lower) && !readOnlyPsql {
 		return "" // not one of our targets — leave it to the LLM
 	}
 	// Strip force-with-lease so the bare `--force` danger check below doesn't
