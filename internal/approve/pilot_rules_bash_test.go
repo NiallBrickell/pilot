@@ -27,6 +27,22 @@ func TestBashCommandDecision(t *testing.T) {
 		{"git reset soft", `git reset --soft origin/main && git status --short`, "approve"},
 		{"git reset mixed path", `git reset HEAD backend/x.go`, "approve"},
 
+		// --- Read-only psql: must fast-approve (inline passwords in the
+		// connection string made the evaluator flap on "credential exposure") ---
+		{"psql select inline password", `cd /tmp && psql "postgresql://claude_code:mAEeDqqqYWmeo_9sDns2vqKjGc7cWY@136.107.76.71:5432/integration?sslmode=require" -x -c "SELECT i.id, i.status, i.created_at, i.updated_at, i.refresh_token_expires_at, length(i.credentials) AS cred_len FROM integration i JOIN integration_config c ON c.id = i.config_id WHERE i.id IN ('7acccd92');" 2>&1 | head -60`, "approve"},
+		{"psql dt meta", `PGPASSWORD='x' psql "postgresql://claude_code@136.107.76.71:5432/knowledge" -c '\dt'`, "approve"},
+		{"psql select count chain", `psql "postgresql://u:p@136.107.76.71:5432/knowledge?sslmode=require" -c 'select count(*) from assets'`, "approve"},
+
+		// --- psql that could write: must fall through to the LLM ("") ---
+		{"psql drop database", `docker exec sqldb-erdo-mx62 psql -U postgres -c 'DROP DATABASE dataset'`, ""},
+		{"psql update", `psql "postgresql://u:p@host:5432/db" -c "UPDATE integration SET status = 'active'"`, ""},
+		{"psql insert", `psql -c "insert into t values (1)"`, ""},
+		{"psql delete where", `psql -c "delete from t where id = 1"`, ""},
+		{"psql sql from file", `psql "postgresql://u:p@host:5432/db" -f migration.sql`, ""},
+		{"psql include meta", `psql -c '\i /tmp/run.sql'`, ""},
+		{"psql create table", `psql -c "create table t (id int)"`, ""},
+		{"psql in for loop", `for db in a b; do psql -c "select 1" "$db"; done`, ""},
+
 		// --- Genuinely dangerous: must fall through to the LLM ("") ---
 		{"gh pr merge", `gh pr merge 1070 --merge`, ""},
 		{"gh pr merge admin", `GH_TOKEN=$TOKEN gh pr merge 9 --repo o/r --merge --admin`, ""},
