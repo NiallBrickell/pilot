@@ -34,9 +34,20 @@ func EvaluateForRuntime(cfg *config.PilotConfig, runtime, toolName, toolInput, c
 	if runtime == "" || runtime == "claude" {
 		// Layer 1: Claude Code settings
 		if result := CheckClaudeSettings(toolName, parsed, toolInput, cwd); result != "" {
+			// An allow-list match must APPROVE, not passthrough: headless
+			// callers of /internal/evaluate have no Claude Code permission
+			// layer beneath them, so "passthrough" reads as a non-approval
+			// and escalates to the human — inverting what the allow list
+			// says. In the hook flow the outcomes are identical (the command
+			// runs either way); "ask" matches keep passing through so the
+			// interactive prompt (or a headless caller's escalation) still
+			// reaches the human.
 			action := "passthrough"
-			if result == "deny" {
+			switch result {
+			case "deny":
 				action = "deny"
+			case "allow":
+				action = "approve"
 			}
 			return &Decision{
 				Action: action,
