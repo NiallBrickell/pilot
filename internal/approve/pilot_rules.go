@@ -45,6 +45,11 @@ var bashTools = map[string]bool{
 // web), SendUserFile, PushNotification, RemoteTrigger, SendMessage, Workflow
 // (spawns agents), the Cron tools (schedule unattended runs), and
 // EnterWorktree/ExitWorktree (mutate the repo).
+//
+// The Task* entries overlap builtinAutoApproved in claude_settings.go, which
+// settles them one layer earlier. The two lists answer different questions —
+// that one models what Claude Code approves on its own, this one is pilot's own
+// judgment and applies to Codex too — so keep both; the overlap is harmless.
 var inertTools = map[string]bool{
 	"TodoWrite": true, "ToolSearch": true, "Skill": true,
 	"TaskCreate": true, "TaskUpdate": true, "TaskList": true,
