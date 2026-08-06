@@ -18,8 +18,40 @@ var readOnlyTools = map[string]bool{
 
 // bashTools are the shell-exec tools whose command we inspect for the
 // deterministic safe-command allowlist.
+//
+// Monitor is here because it carries a shell command in the same "command"
+// field Bash uses — it backgrounds a watch script (`tail -f … | grep`, a poll
+// loop). Leaving it out meant its command was never inspected by anything:
+// FailOpenDecision approves every non-bash tool outright, so during an API
+// outage a Monitor wrapping `rm -rf` would have been rubber-stamped without
+// the danger-marker check Bash gets.
+//
+// apply_patch is deliberately NOT here despite also having a "command" field:
+// Codex puts patch *text* in it, and a diff that happens to contain "rm -rf"
+// in a string literal would trip dangerBashRe on content it never executes.
 var bashTools = map[string]bool{
-	"Bash": true, "shell": true, "local_shell": true,
+	"Bash": true, "shell": true, "local_shell": true, "Monitor": true,
+}
+
+// inertTools change nothing outside the session. They edit the session's own
+// task list, pull a tool schema or a skill's instructions into context, or ask
+// the user something. There is no command, path or destination for a rule to
+// inspect and no judgment for the evaluator to make, so they are approved
+// deterministically — otherwise the catch-all hook matcher would spend an LLM
+// call per todo-list edit (TaskUpdate alone ran 669 times in one week).
+//
+// Anything that reaches outside the session once is deliberately absent and
+// keeps falling through to the evaluator: Artifact (publishes a page to the
+// web), SendUserFile, PushNotification, RemoteTrigger, SendMessage, Workflow
+// (spawns agents), the Cron tools (schedule unattended runs), and
+// EnterWorktree/ExitWorktree (mutate the repo).
+var inertTools = map[string]bool{
+	"TodoWrite": true, "ToolSearch": true, "Skill": true,
+	"TaskCreate": true, "TaskUpdate": true, "TaskList": true,
+	"TaskGet": true, "TaskOutput": true, "TaskStop": true,
+	"AskUserQuestion": true, "ReportFindings": true,
+	"EnterPlanMode": true, "ExitPlanMode": true, "ScheduleWakeup": true,
+	"BashOutput": true, "KillShell": true, "NotebookRead": true,
 }
 
 // webTools read from the network without sending anything of the user's: a
@@ -154,6 +186,10 @@ func CheckPilotRules(cfg *config.PilotConfig, toolName string, parsed map[string
 		if u := extractURL(parsed); u != "" && exfilSinkRe.MatchString(strings.ToLower(u)) {
 			return "" // a capture endpoint — the LLM should look at this one
 		}
+		return "approve"
+	}
+
+	if inertTools[toolName] {
 		return "approve"
 	}
 

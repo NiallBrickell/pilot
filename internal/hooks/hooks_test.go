@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -90,6 +91,68 @@ func TestInstallAllAddsClaudeAndCodexHooks(t *testing.T) {
 	} {
 		if !strings.Contains(string(configData), want) {
 			t.Fatalf("Codex permission feature flag %q not enabled:\n%s", want, configData)
+		}
+	}
+}
+
+// TestClaudeApproveMatcherCoversUnknownTools pins the catch-all matcher. The
+// tool-name list this replaced silently excluded every tool Claude Code shipped
+// after it was written, and an excluded tool doesn't fail loudly — it just
+// prompts the human, which reads as "pilot approved nothing here". The names
+// below are the ones that were leaking; the invented one stands in for whatever
+// ships next.
+func TestClaudeApproveMatcherCoversUnknownTools(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PILOT_CONFIG", filepath.Join(home, "pilot.toml"))
+
+	if err := InstallClaude("/tmp/pilot"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Hooks struct {
+			PreToolUse []struct {
+				Matcher string `json:"matcher"`
+				Hooks   []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"PreToolUse"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+
+	var matcher string
+	for _, entry := range settings.Hooks.PreToolUse {
+		for _, h := range entry.Hooks {
+			if strings.HasSuffix(h.Command, "pilot approve") {
+				matcher = entry.Matcher
+			}
+		}
+	}
+	if matcher == "" {
+		t.Fatalf("no pilot approve hook installed:\n%s", data)
+	}
+
+	re, err := regexp.Compile(matcher)
+	if err != nil {
+		t.Fatalf("matcher %q does not compile: %v", matcher, err)
+	}
+	for _, tool := range []string{
+		"Bash", "Read", "Edit", "Agent", "mcp__axiom__queryDataset",
+		"Monitor", "Skill", "ToolSearch", "TaskCreate", "TaskUpdate",
+		"Artifact", "RemoteTrigger", "SendMessage", "SendUserFile",
+		"Workflow", "CronCreate", "EnterWorktree", "ScheduleWakeup",
+		"SomeToolClaudeCodeHasNotShippedYet",
+	} {
+		if !re.MatchString(tool) {
+			t.Errorf("matcher %q does not match %q — the hook would never run and the user gets the prompt", matcher, tool)
 		}
 	}
 }

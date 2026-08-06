@@ -97,9 +97,23 @@ func InstallClaude(pilotBin string) error {
 	}
 
 	cfg := config.Load()
+	// Catch-all, not a tool-name list. The list this replaced was written when
+	// Claude Code had ten tools; every tool shipped since — Monitor, Skill, the
+	// Task family, ToolSearch, Artifact, RemoteTrigger — fell outside it, so the
+	// hook never ran and the permission prompt went straight to the human. That
+	// is the failure the user sees: not pilot judging a call wrongly, but pilot
+	// never being asked. One week of transcripts had ~1,600 calls across 16
+	// unmatched tools. A name list re-breaks on the next tool Claude Code adds;
+	// a catch-all sends the unknown tool to the evaluator, which is a real
+	// decision, instead of to the user.
+	//
+	// Safe to widen because an unreachable serve allows rather than blocks (see
+	// "serve not running, allowing" in cmd/approve.go) — a broken pilot cannot
+	// wedge every tool call — and Layer 2's inertTools keeps the session
+	// bookkeeping that now reaches the hook off the LLM path entirely.
 	claudePreToolUseEntries := []map[string]any{
 		{
-			"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch|Read|Grep|Glob|Agent|mcp__.*)$",
+			"matcher": ".*",
 			"hooks": []any{
 				map[string]any{"type": "command", "command": pilotBin + " approve"},
 			},

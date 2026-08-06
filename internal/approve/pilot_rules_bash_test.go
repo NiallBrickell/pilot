@@ -1,6 +1,11 @@
 package approve
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/NiallBrickell/pilot/internal/config"
+)
 
 // TestBashCommandDecision pins the deterministic Layer-2 allowlist: safe-but-
 // frequently-misjudged commands must fast-approve, while every genuinely
@@ -93,12 +98,68 @@ func TestFailOpenDecision(t *testing.T) {
 		{"codex shell", "shell", `{"argv":["git","status"]}`, "approve"},
 		{"read tool approves", "Read", `{"file_path":"/etc/hosts"}`, "approve"},
 		{"edit tool approves", "Edit", `{"file_path":"/tmp/x/main.go"}`, "approve"},
+
+		// Monitor carries a shell command. Before it was classed as a bash tool
+		// it took the blanket non-bash approve below, so an outage was the one
+		// moment its command went completely uninspected.
+		{"monitor wait loop", "Monitor", `{"command":"until [ -s \"$f\" ]; do sleep 5; done","description":"wait"}`, "approve"},
+		{"monitor tail grep", "Monitor", `{"command":"tail -f deploy.log | grep --line-buffered ERROR"}`, "approve"},
+		{"monitor smuggling rm -rf asks", "Monitor", `{"command":"tail -f x.log; rm -rf /tmp/junk"}`, "ask"},
+		{"monitor force push asks", "Monitor", `{"command":"while true; do git push --force origin main; sleep 60; done"}`, "ask"},
+		{"monitor websocket has no command", "Monitor", `{"ws":{"url":"wss://events.example.com/stream"}}`, "ask"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := FailOpenDecision(tc.toolName, tc.toolInput); got != tc.want {
 				t.Errorf("FailOpenDecision(%q, %q) = %q, want %q", tc.toolName, tc.toolInput, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestToolCoverage pins how Layer 2 treats the tools the catch-all hook matcher
+// now delivers. Three groups, and the boundary between them is the point:
+// session bookkeeping settles here so the widened matcher costs nothing per
+// call; anything carrying a command or reaching outside the session must not.
+func TestToolCoverage(t *testing.T) {
+	cases := []struct {
+		name  string
+		tool  string
+		input string
+		want  string
+	}{
+		// Inert: no command, no destination, nothing for the evaluator to weigh.
+		{"task update", "TaskUpdate", `{"task_id":"a1","status":"completed"}`, "approve"},
+		{"task create", "TaskCreate", `{"prompt":"fix the flaky test"}`, "approve"},
+		{"tool search", "ToolSearch", `{"query":"select:Monitor","max_results":2}`, "approve"},
+		{"skill load", "Skill", `{"skill":"commit"}`, "approve"},
+		{"ask user question", "AskUserQuestion", `{"questions":[]}`, "approve"},
+		{"exit plan mode", "ExitPlanMode", `{"plan":"do the thing"}`, "approve"},
+
+		// Command-carrying: must be inspected, never blanket-approved.
+		{"monitor safe loop", "Monitor", `{"command":"tail -f app.log | grep --line-buffered ERROR"}`, ""},
+		{"monitor with rm -rf", "Monitor", `{"command":"tail -f x.log; rm -rf /tmp/junk"}`, ""},
+		{"monitor running git push", "Monitor", `{"command":"git push origin main"}`, "approve"},
+
+		// Outward-facing: these leave the session, so they keep reaching the LLM.
+		{"artifact publish", "Artifact", `{"file_path":"/tmp/report.html","favicon":"📊"}`, ""},
+		{"send user file", "SendUserFile", `{"files":["/tmp/report.md"],"status":"normal"}`, ""},
+		{"remote trigger", "RemoteTrigger", `{"prompt":"deploy staging"}`, ""},
+		{"cron create", "CronCreate", `{"schedule":"0 9 * * *","prompt":"daily sweep"}`, ""},
+		{"enter worktree", "EnterWorktree", `{"branch":"feat/x"}`, ""},
+		{"workflow", "Workflow", `{"script":"export const meta = {}"}`, ""},
+	}
+
+	cfg := &config.PilotConfig{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(tc.input), &parsed); err != nil {
+				t.Fatalf("bad test input: %v", err)
+			}
+			if got := CheckPilotRules(cfg, tc.tool, parsed, "/Users/niall/work/projects/pilot"); got != tc.want {
+				t.Errorf("CheckPilotRules(%s) = %q, want %q", tc.tool, got, tc.want)
 			}
 		})
 	}
