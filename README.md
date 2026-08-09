@@ -279,6 +279,31 @@ The Release workflow runs on `v*` tags and uploads:
 
 `install.sh` always pulls `releases/latest/download/<asset>`, so the newest tag is what new installs and `pilot upgrade` receive.
 
+## Security
+
+Pilot inspects and records real tool calls, so a command may carry a secret
+(an inline database password, an API key, a bearer token). Two layers keep those
+out of durable storage and out of git:
+
+- **Capture-time redaction.** Every write into `~/.pilot/pilot.db` — recorded
+  actions and logs — passes through `internal/redact` first, which replaces
+  secret material with `***REDACTED***` while preserving the surrounding command
+  so it stays readable. This runs before anything touches disk.
+- **Repo secret scanning.** [gitleaks](https://github.com/gitleaks/gitleaks)
+  runs in CI (`.github/workflows/secret-scan.yml`) on every push and pull
+  request, using `.gitleaks.toml`. A committed-secret fence test
+  (`internal/config/secret_fence_test.go`) also fails `go test` if a real-looking
+  secret is present in the source tree.
+
+To scan your own commits locally, enable the pre-commit hook once:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook runs gitleaks on staged changes if it is installed, and is a no-op
+otherwise.
+
 ## Runtime files
 
 All runtime state is stored in `~/.pilot/` (override with `$PILOT_HOME`):

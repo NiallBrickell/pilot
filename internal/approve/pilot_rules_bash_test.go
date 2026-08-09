@@ -34,7 +34,7 @@ func TestBashCommandDecision(t *testing.T) {
 
 		// --- Read-only psql: must fast-approve (inline passwords in the
 		// connection string made the evaluator flap on "credential exposure") ---
-		{"psql select inline password", `cd /tmp && psql "postgresql://claude_code:wLraTHhqfDvGm_2xKpq7yQnBve5tZQ@203.0.113.71:5432/integration?sslmode=require" -x -c "SELECT i.id, i.status, i.created_at, i.updated_at, i.refresh_token_expires_at, length(i.credentials) AS cred_len FROM integration i JOIN integration_config c ON c.id = i.config_id WHERE i.id IN ('7acccd92');" 2>&1 | head -60`, "approve"},
+		{"psql select inline password", `cd /tmp && psql "postgresql://claude_code:***REDACTED***@203.0.113.71:5432/integration?sslmode=require" -x -c "SELECT i.id, i.status, i.created_at, i.updated_at, i.refresh_token_expires_at, length(i.credentials) AS cred_len FROM integration i JOIN integration_config c ON c.id = i.config_id WHERE i.id IN ('7acccd92');" 2>&1 | head -60`, "approve"},
 		{"psql dt meta", `PGPASSWORD='x' psql "postgresql://claude_code@203.0.113.71:5432/knowledge" -c '\dt'`, "approve"},
 		{"psql select count chain", `psql "postgresql://u:p@203.0.113.71:5432/knowledge?sslmode=require" -c 'select count(*) from assets'`, "approve"},
 

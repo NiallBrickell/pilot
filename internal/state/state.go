@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/NiallBrickell/pilot/internal/paths"
+	"github.com/NiallBrickell/pilot/internal/redact"
 	_ "modernc.org/sqlite"
 )
 
@@ -158,18 +159,23 @@ func RecordAction(action PilotAction) error {
 		confidence = action.Confidence
 	}
 
+	// Redact secrets before anything touches disk. Detail and ToolInput carry
+	// verbatim tool-call text (an inline password once rode this path from a
+	// Bash command into a committed replay fixture). This is the mandatory
+	// capture-time scrub — every caller of RecordAction is covered here rather
+	// than at each call site.
 	_, err := db.Exec(
 		`INSERT INTO actions (timestamp, action_type, detail, confidence, duration_ms, source, tool_name, tool_input, cwd, session_id)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		action.Timestamp.Format(time.RFC3339Nano),
 		string(action.ActionType),
-		action.Detail,
+		redact.Secrets(action.Detail),
 		confidence,
 		action.DurationMs,
 		action.Source,
 		action.ToolName,
-		action.ToolInput,
-		action.Cwd,
+		redact.Secrets(action.ToolInput),
+		redact.Secrets(action.Cwd),
 		action.SessionID,
 	)
 	if err != nil {
@@ -480,11 +486,13 @@ type LogEntry struct {
 	Message   string `json:"message"`
 }
 
-// WriteLog records a debug log entry.
+// WriteLog records a debug log entry. Messages can embed cwds, transcript
+// snippets, and other captured text, so they are scrubbed on the same
+// capture-time chokepoint as recorded actions.
 func WriteLog(level, source, message string) {
 	db := getDB()
 	db.Exec(`INSERT INTO logs (timestamp, level, source, message) VALUES (?, ?, ?, ?)`,
-		time.Now().UTC().Format(time.RFC3339Nano), level, source, message)
+		time.Now().UTC().Format(time.RFC3339Nano), level, source, redact.Secrets(message))
 
 	// Keep last 500 logs
 	db.Exec(`DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY timestamp DESC LIMIT 500)`)
