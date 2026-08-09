@@ -117,6 +117,26 @@ When a hook fires, `pilot approve` or `pilot codex-approve` POSTs to `pilot serv
 
 If Codex still shows its own approval prompt for a command that Pilot should handle, first check `./pilot status` or `curl http://localhost:9721/status`. Pilot's Codex hook handlers fail open when `pilot serve` is unreachable, so a normal Codex prompt usually means the server is down, the active Codex session was started before hooks/features were enabled, or no decision was returned before Codex asked you.
 
+### Escalation carries the reason
+
+When a call is denied — say `git merge`, which is on the approval prompt's closed
+deny-list — Pilot doesn't just block it. It **escalates to you with the evaluator's
+plain-language explanation** of what it matched and why it's your call, so you
+approve or reject with the security rationale in front of you rather than a bare
+yes/no.
+
+That reason travels everywhere the escalation surfaces:
+
+- the **dashboard** pending-approval card, alongside the approve/reject buttons and countdown;
+- the **`action`** and **`pending_approval`** events on the SSE stream and your webhooks (the `detail` / `reason` field);
+- the hook response returned to the session.
+
+The approval prompt requires the evaluator to name the deny-list entry it matched
+before denying (see [Changing the approval prompt](#changing-the-approval-prompt)),
+so a `git merge` escalation reads like *"git merge is on the deny list — merging is
+a human decision,"* not just "denied." The rationale reaches you at the moment you
+decide.
+
 ### Idle detection
 
 The `Stop` hook fires when the agent stops. `pilot on-stop` or `pilot codex-on-stop` reads the transcript, builds a structured conversation summary, and asks Haiku whether the agent should keep going.
