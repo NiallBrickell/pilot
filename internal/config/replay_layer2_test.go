@@ -20,7 +20,7 @@ func TestReplayCorpusLayer2(t *testing.T) {
 		if err := json.Unmarshal([]byte(tc.input), &parsed); err != nil {
 			t.Fatalf("%s: bad corpus input: %v", tc.name, err)
 		}
-		got := approve.CheckPilotRules(cfg, tc.tool, parsed, "/Users/niall/work/projects/acme")
+		got := approve.CheckPilotRules(cfg, tc.tool, parsed, "/Users/niall/work/projects/myapp")
 		if got == "approve" {
 			decided++
 			if tc.want == "deny" {

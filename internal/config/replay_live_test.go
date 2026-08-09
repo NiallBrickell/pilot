@@ -62,7 +62,7 @@ func TestReplayAgainstEvaluator(t *testing.T) {
 
 			var parsed map[string]any
 			_ = json.Unmarshal([]byte(tc.input), &parsed)
-			if d := approve.CheckPilotRules(&promptCfg, tc.tool, parsed, "/Users/niall/work/projects/acme"); d != "" {
+			if d := approve.CheckPilotRules(&promptCfg, tc.tool, parsed, "/Users/niall/work/projects/myapp"); d != "" {
 				results[i] = outcome{tc, d, "pilot_rules", "matched pilot rule"}
 				return
 			}

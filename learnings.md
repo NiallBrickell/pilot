@@ -90,7 +90,7 @@ Fix: the prompt now says "MOST RECENT messages are the current task". Only flag 
 
 ## Webhook integration pattern
 
-External apps (like acme-development dashboard) integrate via webhooks, not direct code imports. Pilot POSTs events to configured HTTP endpoints. The external app receives them and feeds to its own UI.
+External apps (like a separate dashboard) integrate via webhooks, not direct code imports. Pilot POSTs events to configured HTTP endpoints. The external app receives them and feeds to its own UI.
 
 This is cleaner than the original approach of embedding pilot code in the dashboard. The dashboard just needs a webhook receiver endpoint and a way to approve/reject via `POST /approve/{id}` and `POST /reject/{id}` on pilot serve.
 
