@@ -1,0 +1,44 @@
+# gitleaks configuration for pilot.
+#
+# Pilot records real approval sessions, so command text with credentials can end
+# up in fixtures and history. The capture-time redactor (internal/redact) is the
+# primary defence; this config is the repo-level backstop, run in CI and in the
+# pre-commit hook (.githooks/pre-commit).
+#
+# We extend gitleaks' default ruleset (which already covers GitHub tokens,
+# OpenAI keys, AWS keys, Slack tokens, PEM private keys, and more) and add the
+# two shapes that leaked here: inline connection-string passwords and generic
+# credential env assignments.
+
+title = "pilot"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "inline-connstring-password"
+description = "Inline password in a database/broker connection string"
+regex = '''(?i)\b(?:postgres(?:ql)?|mysql|redis|mongodb|amqp)://[^:/@\s]+:([A-Za-z0-9/+._~-]{12,})@'''
+secretGroup = 1
+keywords = ["postgres", "postgresql", "mysql", "redis", "mongodb", "amqp"]
+
+[[rules]]
+id = "credential-env-assignment"
+description = "High-entropy value assigned to a *_PASSWORD/_TOKEN/_KEY/_SECRET variable"
+regex = '''(?i)[A-Za-z0-9_]*(?:PASSWORD|TOKEN|SECRET|KEY)=['"]?([A-Za-z0-9/+._-]{16,})'''
+secretGroup = 1
+keywords = ["password", "token", "secret", "key"]
+
+[allowlist]
+description = "Redaction placeholders and the redaction package's own test fixtures"
+# The redaction package and its tests are the sanctioned home for secret-shaped
+# literals used to exercise the scrubber; the placeholder itself is not a secret.
+regexes = [
+  '''\*\*\*REDACTED\*\*\*''',
+]
+paths = [
+  '''internal/redact/redact\.go''',
+  '''internal/redact/redact_test\.go''',
+  '''internal/state/state_redact_test\.go''',
+  '''\.gitleaks\.toml''',
+]

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Pre-commit secret scan. Runs gitleaks against the staged changes so a
+# credential never reaches a commit. No-op (with a hint) when gitleaks is not
+# installed, so it never blocks contributors who have not set it up.
+#
+# Enable with:  git config core.hooksPath .githooks
+set -euo pipefail
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pilot: gitleaks not installed; skipping local secret scan." >&2
+  echo "pilot: install it (https://github.com/gitleaks/gitleaks) to scan commits locally." >&2
+  exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+gitleaks protect \
+  --staged \
+  --config "$repo_root/.gitleaks.toml" \
+  --redact \
+  --verbose
