@@ -10,6 +10,39 @@ AI copilot for Claude Code and Codex sessions — auto-approves safe tool calls,
 4. **Interrogation** (opt-in) — periodically checks if the agent is still on track. If it's going in circles or ignoring instructions, pilot redirects it. Off by default; enable with `interrogation_enabled = true`.
 5. **Webhooks** — POST events to your own HTTP endpoints for custom integrations, dashboards, or logging.
 
+## How this compares to Claude Code's auto mode
+
+Claude Code's auto mode (now the default) runs its own LLM classifier and takes
+natural-language configuration — an `autoMode.environment` description plus
+`allow` / `soft_deny` / `hard_deny` **prose** rules — on top of the usual
+`permissions.allow` / `ask` / `deny` rules and `PreToolUse` hooks. For a **single
+session** that covers most of what Pilot's approval layer does, so if you run one
+or two sessions and mostly want fewer prompts, configure auto mode first.
+
+Pilot and auto mode compose rather than purely compete: Pilot's Layer 1 honors
+your `permissions.allow` / `ask` / `deny` rules — the same ones auto mode evaluates
+before its classifier — so a tightened permission set means fewer Haiku calls.
+(The prose `autoMode` block is read by Claude Code's classifier, not by Pilot's
+evaluator; keep must-never-run boundaries in `permissions.deny`, which both honor.)
+
+Pilot earns its place on the things auto mode doesn't do at all:
+
+- **Keep-going nudges.** Auto mode decides whether a *tool call* is safe; it does
+  nothing when an agent stops half-finished. Pilot's Stop hook evaluates the
+  transcript and nudges it onward — the core of running sessions unattended.
+- **Out-of-band human escalation.** Auto mode's `ask` prompts in *that* terminal.
+  Across 20 sessions you can't watch 20 terminals; Pilot funnels every pending
+  approval into one dashboard/webhook queue with a timeout fallback.
+- **Codex, not just Claude Code.** Auto mode is Claude Code only. Pilot covers
+  Codex sessions with the same policy.
+- **A decision layer you own.** Auto mode's classifier prompt is fixed; you only
+  feed it context. Pilot's `[prompts].approval` is yours to edit, version, and
+  regression-test (`make replay`).
+- **Fleet observability.** SSE stream, webhooks, spend cap, and timing profiles
+  across every session — auto mode is per-instance.
+
+Pilot is for driving a fleet, not for being a better approver in one window.
+
 ## Architecture
 
 ```
