@@ -32,6 +32,20 @@ func TestBashCommandDecision(t *testing.T) {
 		{"git reset soft", `git reset --soft origin/main && git status --short`, "approve"},
 		{"git reset mixed path", `git reset HEAD backend/x.go`, "approve"},
 
+		// --- Read-only git reads: must fast-approve (touch no working tree,
+		// make no commit, push nothing — safer than the writes above) ---
+		{"git fetch plain", `git fetch origin`, "approve"},
+		{"git fetch -C dir", `git -C /home/me/repos/app fetch --quiet origin`, "approve"},
+		{"git pull ff-only -C dir", `git -C /home/me/repos/publish pull --ff-only --quiet origin main`, "approve"},
+		{"git ls-remote", `git ls-remote origin main`, "approve"},
+		{"git log origin main", `git -C /home/me/repos/app log origin/main --since="2026-08-05" --pretty=format:"%h %s"`, "approve"},
+		{"git show diff", `git -C /home/me/repos/app show 891abc --stat`, "approve"},
+		// A routine refreshing several checkouts, verbatim: a for-loop fetching
+		// each repo then a fast-forward pull of a publish clone. This whole-string
+		// compound shape is what was escalating to a human before this rule, and it
+		// exercises the interposed `git -C <dir>` tolerance in every sub-command.
+		{"multi-repo fetch loop", `for d in app-a app-b app-c; do git -C /home/me/repos/$d fetch --quiet origin || echo "FETCH FAILED: $d"; done; git -C /home/me/repos/publish pull --ff-only --quiet origin main && echo "PUBLISH CLONE AT: done"`, "approve"},
+
 		// --- Read-only psql: must fast-approve (inline passwords in the
 		// connection string made the evaluator flap on "credential exposure") ---
 		{"psql select inline password", `cd /tmp && psql "postgresql://claude_code:***REDACTED***@203.0.113.71:5432/integration?sslmode=require" -x -c "SELECT i.id, i.status, i.created_at, i.updated_at, i.refresh_token_expires_at, length(i.credentials) AS cred_len FROM integration i JOIN integration_config c ON c.id = i.config_id WHERE i.id IN ('7acccd92');" 2>&1 | head -60`, "approve"},
@@ -59,7 +73,14 @@ func TestBashCommandDecision(t *testing.T) {
 		{"git reset hard alone", `git reset --hard origin/main`, ""},
 		{"git rebase then reset hard", `git rebase origin/main || git reset --hard ORIG_HEAD`, ""},
 		{"rm -rf alongside push", `git push origin x && rm -rf /tmp/junk`, ""},
+		{"rm -rf smuggled behind git fetch", `git fetch origin && rm -rf /tmp/junk`, ""},
+		{"git fetch then reset hard", `git fetch origin && git reset --hard origin/main`, ""},
 		{"terraform apply", `terraform apply -auto-approve -target=x`, ""},
+
+		// --- Read-adjacent but not on the read allowlist: fall through ---
+		// Bare `git pull` can fast-forward OR create a merge commit; only the
+		// explicit `--ff-only` form is approved, so this keeps reaching the LLM.
+		{"git pull no ff-only", `git pull origin main`, ""},
 
 		// --- Not our concern: fall through unchanged ---
 		{"git status", `git status --short`, ""},
