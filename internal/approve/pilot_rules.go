@@ -93,11 +93,26 @@ var exfilSinkRe = regexp.MustCompile(`webhook\.site|requestbin|pipedream\.net|be
 // by analogy to the deny list despite that list calling itself exhaustive. Both
 // are safe to fast-approve only because dangerBashRe below still catches the one
 // irreversible form, `git reset --hard`, and sends it to the LLM.
+//
+// The read-only reads — `git fetch`, `git pull --ff-only`, `git ls-remote`,
+// `git log`, `git show` — are strictly safer than the writes already listed
+// above (they touch no working tree, make no commit, push nothing), yet the
+// evaluator was gating them and forcing a human approval for routine freshness
+// work (e.g. a scheduled job refreshing its checkouts before reading history).
+// Each tolerates an interposed `git -C <dir>`/`-c <cfg>` (the flags sit between
+// `git` and the subcommand, so a bare `git fetch\b` would miss `git -C /path
+// fetch`). Note `git pull --ff-only` (a pull) is approved while `git merge
+// --ff-only` (a merge) stays denied via dangerBashRe — different operations.
 var safeBashCommandRe = regexp.MustCompile(`(?:^|[^a-z])gh pr (?:create|close|reopen|view|list|diff|checkout|comment|edit|ready|review|status)\b` +
 	`|(?:^|[^a-z-])git push\b` +
 	`|(?:^|[^a-z-])git merge-base\b` +
 	`|(?:^|[^a-z-])git rebase\b` +
-	`|(?:^|[^a-z-])git reset\b`)
+	`|(?:^|[^a-z-])git reset\b` +
+	`|(?:^|[^a-z-])git(?: -c \S+)* fetch\b` +
+	`|(?:^|[^a-z-])git(?: -c \S+)* pull --ff-only\b` +
+	`|(?:^|[^a-z-])git(?: -c \S+)* ls-remote\b` +
+	`|(?:^|[^a-z-])git(?: -c \S+)* log\b` +
+	`|(?:^|[^a-z-])git(?: -c \S+)* show\b`)
 
 // dangerBashRe is a broad guard: if a command contains ANY of these markers we
 // refuse to fast-approve it and fall through to the LLM (preserving every
