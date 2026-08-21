@@ -487,29 +487,32 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 	s.evalSem <- struct{}{}
 	defer func() { <-s.evalSem }()
 
-	// Transient API errors (timeouts, 5xx) hit ~2% of calls — retry once with a
-	// fresh deadline before falling back.
+	// Retry only errors Anthropic documents as transient, with a fresh deadline.
+	// Billing/auth/validation failures cannot recover on the next call; retrying
+	// those once per tool invocation caused the exhausted-credit request storm.
 	var evalResult *anthropic.ApprovalResult
 	var err error
 	for attempt := range 2 {
-		if attempt > 0 {
-			slog.Warn("Anthropic API error (approval), retrying", "error", err, "tool", req.ToolName)
-			time.Sleep(300 * time.Millisecond)
-		}
 		ctx, cancel := context.WithTimeout(r.Context(), s.evalTimeout)
 		evalResult, err = s.ai.EvaluateApproval(ctx, cfg.Prompts.Approval, req.ToolName, req.ToolInput, model)
 		cancel()
 		if err == nil {
 			break
 		}
+		if attempt == 1 || !anthropic.IsRetryable(err) {
+			break
+		}
+		delay := evaluatorRetryDelay(err)
+		slog.Warn("Transient Anthropic API error (approval), retrying", "error", err, "tool", req.ToolName, "delay", delay)
+		time.Sleep(delay)
 	}
 	if err != nil {
-		// Evaluator unavailable even after retry. Fail open rather than
-		// blocking every request on infra trouble: approve unless the command
-		// carries a danger marker, which still falls through to the user.
+		// Evaluator unavailable even after retry. Apply the same deterministic
+		// boundary used in normal mode: routine calls approve; danger markers or
+		// input that cannot be inspected still fall through to the user.
 		durationMs := float64(time.Since(evalStart).Microseconds()) / 1000.0
 		decision := "ask"
-		reason := "pilot: evaluator unavailable and command matches danger patterns — confirm manually"
+		reason := "pilot: evaluator unavailable and call is dangerous or ambiguous — confirm manually"
 		if approve.FailOpenDecision(req.ToolName, req.ToolInput) == "approve" {
 			decision = "approve"
 			reason = "pilot: evaluator unavailable (API error), auto-approved by fail-open rules"
@@ -834,16 +837,37 @@ func evaluatorSpendCapReached(cfg *config.PilotConfig) (bool, state.MonthlyUsage
 	return capUSD > 0 && usage.EstimatedCostUSD >= capUSD, usage
 }
 
+func evaluatorRetryDelay(err error) time.Duration {
+	const (
+		defaultDelay = 300 * time.Millisecond
+		maxDelay     = 5 * time.Second
+	)
+	delay := anthropic.RetryDelay(err)
+	if delay <= 0 {
+		return defaultDelay
+	}
+	return min(delay, maxDelay)
+}
+
 func recordEvaluatorUsage(kind, model string, cfg *config.PilotConfig, usage anthropic.Usage) {
-	if usage.InputTokens <= 0 && usage.OutputTokens <= 0 {
+	if usage.TotalInputTokens() <= 0 && usage.OutputTokens <= 0 {
 		return
 	}
 	costUSD := estimateUsageCostUSD(cfg, usage)
+	slog.Debug("Anthropic evaluator usage",
+		"kind", kind,
+		"model", model,
+		"input_tokens", usage.InputTokens,
+		"cache_creation_input_tokens", usage.CacheCreationInputTokens,
+		"cache_read_input_tokens", usage.CacheReadInputTokens,
+		"output_tokens", usage.OutputTokens,
+		"estimated_cost_usd", costUSD,
+	)
 	if err := state.RecordUsage(state.UsageRecord{
 		Timestamp:        time.Now().UTC(),
 		Kind:             kind,
 		Model:            model,
-		InputTokens:      uint64(max(usage.InputTokens, 0)),
+		InputTokens:      uint64(max(usage.TotalInputTokens(), 0)),
 		OutputTokens:     uint64(max(usage.OutputTokens, 0)),
 		EstimatedCostUSD: costUSD,
 	}); err != nil {
@@ -860,7 +884,12 @@ func estimateUsageCostUSD(cfg *config.PilotConfig, usage anthropic.Usage) float6
 	if outputCost <= 0 {
 		outputCost = config.DefaultOutputCostPerMTokUSD
 	}
+	// Anthropic's five-minute cache charges writes at 1.25x base input and
+	// reads at 0.1x. Keep all input categories in the spend estimate so the
+	// monthly cap remains authoritative once caching starts taking effect.
 	return (float64(max(usage.InputTokens, 0))/1_000_000)*inputCost +
+		(float64(max(usage.CacheCreationInputTokens, 0))/1_000_000)*inputCost*1.25 +
+		(float64(max(usage.CacheReadInputTokens, 0))/1_000_000)*inputCost*0.1 +
 		(float64(max(usage.OutputTokens, 0))/1_000_000)*outputCost
 }
 

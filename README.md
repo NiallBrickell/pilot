@@ -4,7 +4,7 @@ AI copilot for Claude Code and Codex sessions — auto-approves safe tool calls,
 
 ## What it does
 
-1. **Three-layer approval** — tool calls go through runtime settings where available → pilot rules → Haiku evaluation. Most calls resolve without an LLM call.
+1. **Three-layer approval** — tool calls go through runtime settings where available → Pilot's deterministic danger boundary → Haiku for residual danger or ambiguity. Inspectable routine calls resolve locally.
 2. **Escalation** — dangerous calls are held for human approval via dashboard, webhook, or future TUI. If no response arrives before timeout, Claude prompts normally and Codex PermissionRequest hooks decline to decide.
 3. **Idle detection** — when an agent stops unnecessarily, Haiku evaluates the transcript and auto-responds with context-aware nudges like "run the tests" or "keep going".
 4. **Interrogation** (opt-in) — periodically checks if the agent is still on track. If it's going in circles or ignoring instructions, pilot redirects it. Off by default; enable with `interrogation_enabled = true`.
@@ -52,8 +52,8 @@ Claude Code / Codex session (any of 20+)
     │                         │
     │                         POST to pilot serve
     │                         ├─ Layer 1: runtime settings where available (no LLM)
-    │                         ├─ Layer 2: Pilot rules (no LLM)
-    │                         ├─ Layer 3: Haiku via Anthropic API
+    │                         ├─ Layer 2: routine call / danger-marker boundary (no LLM)
+    │                         ├─ Layer 3: Haiku for residual danger or ambiguity
     │                         │
     │                         ├─ Approved → "allow"
     │                         ├─ Escalated → wait for human (timeout configurable)
@@ -112,8 +112,16 @@ For Codex, Pilot installs `PreToolUse` trajectory-check hooks plus `PermissionRe
 When a hook fires, `pilot approve` or `pilot codex-approve` POSTs to `pilot serve`, which runs the approval hierarchy:
 
 1. **Runtime settings** — for Claude Code, reads `~/.claude/settings.json` and `.claude/settings.local.json` walking up from the session's cwd. For Codex, reads `~/.codex/config.toml` and treats trusted projects as locally approved for routine Bash/edit/write permission requests while still blocking obvious destructive commands.
-2. **Pilot rules** — fast pattern matching without LLM (extension point).
-3. **Haiku evaluation** — calls the Anthropic API directly with structured JSON output.
+2. **Pilot rules** — deterministically approve inspectable routine calls. Calls matching the approval prompt's complete danger/ambiguity markers continue; malformed or opaque structured input never fast-approves.
+3. **Haiku evaluation** — judges only that residual set through the Anthropic API with structured JSON output.
+
+### Evaluator spend and degraded mode
+
+The deterministic boundary is the primary cost control: ordinary shell commands and structured tools do not pay for a model to repeat an approval. The same boundary is used if Anthropic is unavailable, so routine calls keep moving while danger markers and uninspectable input ask the user.
+
+Pilot retries only transient transport errors, HTTP 408/409/429, and 5xx responses. Authentication, validation, permission and billing responses are terminal. A `402 billing_error` (plus the legacy low-credit response) opens a process-wide circuit breaker, so subsequent residual calls do not keep spending HTTP requests on an account that cannot serve them.
+
+Residual requests enable Anthropic's ephemeral prompt cache for the fixed system prompt. Cache eligibility is model- and prefix-length-dependent, so Pilot does not assume it took effect: it parses `cache_creation_input_tokens` and `cache_read_input_tokens`, includes their actual write/read rates in local spend accounting, and emits the counters in debug usage logs. Zero counters mean Anthropic skipped caching for that response.
 
 If Codex still shows its own approval prompt for a command that Pilot should handle, first check `./pilot status` or `curl http://localhost:9721/status`. Pilot's Codex hook handlers fail open when `pilot serve` is unreachable, so a normal Codex prompt usually means the server is down, the active Codex session was started before hooks/features were enabled, or no decision was returned before Codex asked you.
 
@@ -195,7 +203,7 @@ All config lives in `~/.pilot/pilot.toml`. Created automatically on first run. E
 | `max_concurrent_evals` | `4+2` | Max concurrent API calls (4 approval + 2 idle, separate semaphores) |
 | `evaluator_timeout_ms` | `15000` | Evaluator call timeout (ms) |
 | `monthly_spend_cap_usd` | `20.0` | Monthly Anthropic evaluator spend cap. `0` disables it. |
-| `input_cost_per_mtok_usd` | `1.0` | Input token price used for local spend estimates |
+| `input_cost_per_mtok_usd` | `1.0` | Base input token price used for local spend estimates; reported cache writes/reads are priced at 1.25x/0.1x this value |
 | `output_cost_per_mtok_usd` | `5.0` | Output token price used for local spend estimates |
 | `interrogation_confidence` | `0.7` | Min confidence for interrogation redirects |
 | `interrogation_enabled` | `false` | Allow PreToolUse trajectory checks to redirect stuck/off-track agents |
@@ -283,9 +291,9 @@ make dashboard-build    # production build
 
 ### Changing the approval prompt
 
-The prompt in `internal/config/pilot.toml` is the whole product, and a regression
-in it is invisible: the build passes, the tests pass, and the only symptom is the
-evaluator denying routine work weeks later. Two rules keep that from happening.
+The prompt in `internal/config/pilot.toml` defines the residual judgment after
+Pilot's deterministic danger boundary. A regression in either layer can silently
+interrupt work or bypass a manual gate, so two rules keep them aligned.
 
 **Record the hash.** Append the new prompt hash to `internal/config/prompt_history.txt`
 whenever you change `[prompts]`. `go test ./internal/config` fails until you do, and
@@ -299,13 +307,14 @@ prompt forever.
 verdict that lands the wrong way:
 
 ```
-41/41 correct (11 settled by pilot rules, 30 by the evaluator)
+47/47 correct (33 settled by pilot rules, 14 by the evaluator)
 ```
 
-It costs a few cents per run, so it isn't in CI — `make release` runs it instead,
-which is the point where a bad prompt would reach users. Add a case to
-`replay_corpus_test.go` whenever you fix a false positive, taking the command
-verbatim from the escalation that caused it.
+The deterministic corpus test runs in CI and requires every routine case to settle
+locally while preserving every deliberate manual gate. The live evaluator replay
+costs a few cents, so `make release` runs it instead. Add a case to
+`replay_corpus_test.go` whenever you fix a false positive or expand the danger
+boundary, taking the command verbatim from the escalation that exposed it.
 
 Haiku reads the deny list very literally. "`rm -rf` where the path starts with `/`"
 was read as covering plain `rm a.md b.md`, and "a destination the user has no

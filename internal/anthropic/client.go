@@ -6,15 +6,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+const messagesEndpoint = "https://api.anthropic.com/v1/messages"
 
 var (
 	lowBalanceMu       sync.Mutex
@@ -32,13 +37,95 @@ func warnLowBalance() {
 		return
 	}
 	lowBalanceLastWarn = time.Now()
-	slog.Error("PILOT EVALUATOR DISABLED: Anthropic credit balance too low — every tool call is now falling through to a manual approval prompt. Top up at https://console.anthropic.com/settings/billing to restore auto-approval.")
+	slog.Error("PILOT EVALUATOR DISABLED: Anthropic credit balance too low — routine calls still use deterministic approval, while residual danger/ambiguity calls fall through to a manual prompt. Top up at https://console.anthropic.com/settings/billing to restore evaluator judgments.")
 }
 
 // Client calls the Anthropic Messages API directly.
 type Client struct {
-	apiKey     string
-	httpClient *http.Client
+	apiKey         string
+	httpClient     *http.Client
+	endpoint       string
+	billingCircuit atomic.Bool
+}
+
+// APIError is Anthropic's standard non-2xx response. Keeping status, type and
+// request ID structured lets callers distinguish capacity from malformed
+// requests without brittle substring matching.
+type APIError struct {
+	StatusCode  int
+	Type        string
+	Message     string
+	RequestID   string
+	RetryAfter  time.Duration
+	CircuitOpen bool
+}
+
+func (e *APIError) Error() string {
+	detail := e.Message
+	if detail == "" {
+		detail = http.StatusText(e.StatusCode)
+	}
+	if e.Type != "" {
+		detail = e.Type + ": " + detail
+	}
+	if e.RequestID != "" {
+		detail += " (request_id=" + e.RequestID + ")"
+	}
+	return fmt.Sprintf("Anthropic API returned %d: %s", e.StatusCode, detail)
+}
+
+// TransportError is a request that failed before Anthropic returned an HTTP
+// response. Connection failures and timeouts are retryable; caller
+// cancellation is not.
+type TransportError struct {
+	Err error
+}
+
+func (e *TransportError) Error() string { return "Anthropic API call failed: " + e.Err.Error() }
+func (e *TransportError) Unwrap() error { return e.Err }
+
+// IsBillingError reports errors that cannot recover without changing account
+// credit. Anthropic's current contract uses 402/billing_error; the legacy 400
+// low-balance text remains recognized so an older edge response cannot create
+// another request storm.
+func IsBillingError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.StatusCode == http.StatusPaymentRequired ||
+		apiErr.Type == "billing_error" ||
+		strings.Contains(strings.ToLower(apiErr.Message), "credit balance is too low")
+}
+
+// IsRetryable follows Anthropic's error contract: connection failures,
+// 408/409/429 and 5xx may be retried. Billing, auth, validation and other 4xx
+// responses are terminal for the request.
+func IsRetryable(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || IsBillingError(err) {
+		return false
+	}
+	var transportErr *TransportError
+	if errors.As(err, &transportErr) {
+		return true
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.StatusCode == http.StatusRequestTimeout ||
+		apiErr.StatusCode == http.StatusConflict ||
+		apiErr.StatusCode == http.StatusTooManyRequests ||
+		apiErr.StatusCode >= http.StatusInternalServerError
+}
+
+// RetryDelay returns Anthropic's Retry-After delay when one was supplied.
+func RetryDelay(err error) time.Duration {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.RetryAfter
+	}
+	return 0
 }
 
 // ApprovalDecision represents the outcome of an approval evaluation.
@@ -66,8 +153,16 @@ type IdleResult struct {
 }
 
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+}
+
+// TotalInputTokens includes ordinary and cached prompt tokens for observability.
+// Pricing still treats the three categories separately.
+func (u Usage) TotalInputTokens() int {
+	return u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
 }
 
 // ResolveAPIKey returns the Anthropic API key from the environment or from
@@ -91,6 +186,7 @@ func NewClient(timeout time.Duration, envFilePath string) (*Client, error) {
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
+		endpoint: messagesEndpoint,
 	}, nil
 }
 
@@ -147,12 +243,24 @@ func (c *Client) EvaluateIdle(ctx context.Context, systemPrompt, transcriptConte
 
 // call sends a single messages.create request and returns the raw JSON text content.
 func (c *Client) call(ctx context.Context, model, systemPrompt, userContent string, schema map[string]any) (json.RawMessage, Usage, error) {
+	if c.billingCircuit.Load() {
+		return nil, Usage{}, &APIError{
+			StatusCode:  http.StatusPaymentRequired,
+			Type:        "billing_error",
+			Message:     "evaluator billing circuit is open after an exhausted-credit response",
+			CircuitOpen: true,
+		}
+	}
 	body := map[string]any{
 		"model":       model,
 		"max_tokens":  512,
 		"temperature": 0, // deterministic decisions — no sampling flapping on borderline calls
 		"system":      systemPrompt,
-		"messages":   []map[string]string{{"role": "user", "content": userContent}},
+		"messages":    []map[string]string{{"role": "user", "content": userContent}},
+		// Current Messages API automatic caching. Anthropic silently skips
+		// caching when a model's minimum cacheable prefix is not met; response
+		// usage telemetry is the authority on whether this request hit the cache.
+		"cache_control": map[string]string{"type": "ephemeral"},
 		"output_config": map[string]any{
 			"format": schema,
 		},
@@ -163,7 +271,11 @@ func (c *Client) call(ctx context.Context, model, systemPrompt, userContent stri
 		return nil, Usage{}, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(reqBody))
+	endpoint := c.endpoint
+	if endpoint == "" {
+		endpoint = messagesEndpoint
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, Usage{}, fmt.Errorf("create request: %w", err)
 	}
@@ -173,21 +285,22 @@ func (c *Client) call(ctx context.Context, model, systemPrompt, userContent stri
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, Usage{}, fmt.Errorf("API call failed: %w", err)
+		return nil, Usage{}, &TransportError{Err: err}
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, Usage{}, fmt.Errorf("read response: %w", err)
+		return nil, Usage{}, &TransportError{Err: fmt.Errorf("read response: %w", err)}
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		bodyStr := string(respBody)
-		if strings.Contains(bodyStr, "credit balance is too low") {
+		apiErr := parseAPIError(resp.StatusCode, resp.Header, respBody)
+		if IsBillingError(apiErr) {
+			c.billingCircuit.Store(true)
 			warnLowBalance()
 		}
-		return nil, Usage{}, fmt.Errorf("API returned %d: %s", resp.StatusCode, truncate(bodyStr, 500))
+		return nil, Usage{}, apiErr
 	}
 
 	var apiResp struct {
@@ -212,6 +325,42 @@ func (c *Client) call(ctx context.Context, model, systemPrompt, userContent stri
 		return apiResp.Content[0].Text, apiResp.Usage, nil
 	}
 	return json.RawMessage(textStr), apiResp.Usage, nil
+}
+
+func parseAPIError(statusCode int, header http.Header, body []byte) *APIError {
+	var envelope struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+		RequestID string `json:"request_id"`
+	}
+	_ = json.Unmarshal(body, &envelope)
+	message := envelope.Error.Message
+	if message == "" {
+		message = truncate(strings.TrimSpace(string(body)), 500)
+	}
+	return &APIError{
+		StatusCode: statusCode,
+		Type:       envelope.Error.Type,
+		Message:    message,
+		RequestID:  envelope.RequestID,
+		RetryAfter: parseRetryAfter(header.Get("Retry-After")),
+	}
+}
+
+func parseRetryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		return max(time.Until(at), 0)
+	}
+	return 0
 }
 
 // Schemas for structured output.

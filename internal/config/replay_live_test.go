@@ -66,20 +66,18 @@ func TestReplayAgainstEvaluator(t *testing.T) {
 				results[i] = outcome{tc, d, "pilot_rules", "matched pilot rule"}
 				return
 			}
-			// A timeout or 5xx is infra, not a verdict — retry once before
-			// calling it a failure, the same distinction the server makes.
+			// Retry only a typed transient error, matching the server. Billing,
+			// authentication and validation errors cannot recover on attempt two.
 			var res *anthropic.ApprovalResult
 			var err error
 			for attempt := range 2 {
-				if attempt > 0 {
-					time.Sleep(time.Second)
-				}
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				res, err = ai.EvaluateApproval(ctx, promptCfg.Prompts.Approval, tc.tool, tc.input, model)
 				cancel()
-				if err == nil {
+				if err == nil || attempt == 1 || !anthropic.IsRetryable(err) {
 					break
 				}
+				time.Sleep(time.Second)
 			}
 			if err != nil {
 				results[i] = outcome{tc, "error", "api", err.Error()}

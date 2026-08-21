@@ -16,19 +16,17 @@ var readOnlyTools = map[string]bool{
 	"Read": true, "Grep": true, "Glob": true,
 }
 
-// bashTools are the shell-exec tools whose command we inspect for the
-// deterministic safe-command allowlist.
+// bashTools are the shell-exec tools whose command we inspect against the
+// deterministic danger boundary.
 //
 // Monitor is here because it carries a shell command in the same "command"
 // field Bash uses — it backgrounds a watch script (`tail -f … | grep`, a poll
-// loop). Leaving it out meant its command was never inspected by anything:
-// FailOpenDecision approves every non-bash tool outright, so during an API
-// outage a Monitor wrapping `rm -rf` would have been rubber-stamped without
-// the danger-marker check Bash gets.
+// loop). It needs the same command inspection in normal and degraded mode.
 //
 // apply_patch is deliberately NOT here despite also having a "command" field:
 // Codex puts patch *text* in it, and a diff that happens to contain "rm -rf"
-// in a string literal would trip dangerBashRe on content it never executes.
+// in a string literal would trip command danger markers on content it never
+// executes.
 var bashTools = map[string]bool{
 	"Bash": true, "shell": true, "local_shell": true, "Monitor": true,
 }
@@ -39,12 +37,6 @@ var bashTools = map[string]bool{
 // inspect and no judgment for the evaluator to make, so they are approved
 // deterministically — otherwise the catch-all hook matcher would spend an LLM
 // call per todo-list edit (TaskUpdate alone ran 669 times in one week).
-//
-// Anything that reaches outside the session once is deliberately absent and
-// keeps falling through to the evaluator: Artifact (publishes a page to the
-// web), SendUserFile, PushNotification, RemoteTrigger, SendMessage, Workflow
-// (spawns agents), the Cron tools (schedule unattended runs), and
-// EnterWorktree/ExitWorktree (mutate the repo).
 //
 // The Task* entries overlap builtinAutoApproved in claude_settings.go, which
 // settles them one layer earlier. The two lists answer different questions —
@@ -78,114 +70,236 @@ var exfilSinkRe = regexp.MustCompile(`webhook\.site|requestbin|pipedream\.net|be
 	`pastebin\.com|paste\.ee|hastebin|ghostbin|termbin|` +
 	`transfer\.sh|0x0\.st|file\.io|anonfiles`)
 
-// safeBashCommandRe matches commands that are routine and safe but which the
-// haiku evaluator intermittently over-denies by over-extrapolating from the
-// deny list (e.g. confusing `gh pr create` with `gh pr merge`, or a plain
-// `git push` with a force-push). Matching here short-circuits the LLM so these
-// never flap. Anything NOT matched falls through to the LLM exactly as before,
-// so this only ever ADDS approvals — never new denies.
+// dangerCommandRes are the complete boundary between deterministic approval and
+// Haiku. Pilot's policy is a closed deny list, so sending every ordinary shell
+// command to Haiku merely pays a model to say "approve". Inspectable commands
+// now approve by default; only a concrete deny-list marker or an operation whose
+// safety depends on context reaches the evaluator.
 //
-// Note the explicit gh-pr subcommand allowlist: `merge` is deliberately absent
-// (it must keep reaching the LLM, which denies it), and `git merge-base` is
-// distinct from the denied `git merge`.
-//
-// `git rebase` and `git reset` are here because the evaluator kept denying them
-// by analogy to the deny list despite that list calling itself exhaustive. Both
-// are safe to fast-approve only because dangerBashRe below still catches the one
-// irreversible form, `git reset --hard`, and sends it to the LLM.
-//
-// The read-only reads — `git fetch`, `git pull --ff-only`, `git ls-remote`,
-// `git log`, `git show` — are strictly safer than the writes already listed
-// above (they touch no working tree, make no commit, push nothing), yet the
-// evaluator was gating them and forcing a human approval for routine freshness
-// work (e.g. a scheduled job refreshing its checkouts before reading history).
-// Each tolerates an interposed `git -C <dir>`/`-c <cfg>` (the flags sit between
-// `git` and the subcommand, so a bare `git fetch\b` would miss `git -C /path
-// fetch`). Note `git pull --ff-only` (a pull) is approved while `git merge
-// --ff-only` (a merge) stays denied via dangerBashRe — different operations.
-var safeBashCommandRe = regexp.MustCompile(`(?:^|[^a-z])gh pr (?:create|close|reopen|view|list|diff|checkout|comment|edit|ready|review|status)\b` +
-	`|(?:^|[^a-z-])git push\b` +
-	`|(?:^|[^a-z-])git merge-base\b` +
-	`|(?:^|[^a-z-])git rebase\b` +
-	`|(?:^|[^a-z-])git reset\b` +
-	`|(?:^|[^a-z-])git(?: -c \S+)* fetch\b` +
-	`|(?:^|[^a-z-])git(?: -c \S+)* pull --ff-only\b` +
-	`|(?:^|[^a-z-])git(?: -c \S+)* ls-remote\b` +
-	`|(?:^|[^a-z-])git(?: -c \S+)* log\b` +
-	`|(?:^|[^a-z-])git(?: -c \S+)* show\b`)
+// Some markers intentionally retain context for Haiku to judge (for example,
+// whether a Docker force-remove targets production). Routine cases explicitly
+// approved by the prompt, including temp cleanup and non-destructive applies,
+// are settled before that boundary.
+var dangerCommandRes = []*regexp.Regexp{
+	regexp.MustCompile(`\bgh\b[^\n;&|]*\bpr\s+merge\b`),
+	regexp.MustCompile(`\bgit\b[^\n;&|]*\bmerge(?:\s|$|[;&|'])`), // not merge-base
+	regexp.MustCompile(`\bgit\b[^\n;&|]*\breset\b[^\n;&|]*--hard\b`),
+	regexp.MustCompile(`\bgit\b[^\n;&|]*\bpush\b[^\n;&|]*(?:--force(?:\s|$)|\s-f(?:\s|$))`),
+	regexp.MustCompile(`\bfind\b[^\n;&|]*(?:-delete\b|-exec(?:dir)?\s+rm\b[^\n;&|]*(?:-[a-z]*r[a-z]*\b|--recursive\b))`),
+	regexp.MustCompile(`\b(?:drop\s+(?:table|database|schema)|truncate\b|delete\s+from\b|update\s+\S+\s+set\b)`),
+	regexp.MustCompile(`\bpsql\b[^\n;&|]*(?:\s-f\s|--file\b|\\i\b|\\o\b|\\copy\b)`),
+	regexp.MustCompile(`\b(?:redis-cli\s+)?(?:flushall|flushdb)\b`),
+	regexp.MustCompile(`\b(?:railway\s+delete|fly\s+destroy|kubectl\s+delete|vercel\s+(?:rm|env\s+rm)|terraform\s+destroy|encore\s+secret\s+delete)\b`),
+	regexp.MustCompile(`\bterraform\b[^\n;&|]*\bapply\b[^\n;&|]*-auto-approve\b`),
+	regexp.MustCompile(`\bdocker\b[^\n;&|]*\brm\b[^\n;&|]*(?:-[a-z]*f[a-z]*\b|--force\b)`),
+	regexp.MustCompile(`(?:-x\s*|--request\s+)delete\b|["'](?:method|http_method)["']\s*:\s*["']delete["']`),
+	regexp.MustCompile(`\b(?:npm|pnpm|yarn)\s+publish\b|\btwine\s+upload\b`),
+}
 
-// dangerBashRe is a broad guard: if a command contains ANY of these markers we
-// refuse to fast-approve it and fall through to the LLM (preserving every
-// existing deny). It does not need to be exhaustive for safety — a missed
-// danger marker just means the command is evaluated by the LLM as it is today.
-// It only needs to be broad enough that we never fast-approve a chain that
-// smuggles a destructive op alongside a safe-looking one.
-var dangerBashRe = regexp.MustCompile(`gh pr merge` +
-	`|git merge(?:\s|$|;|&|\||')` + // `git merge ...` but not `git merge-base`
-	`|git reset --hard` +
-	`|git clean -[a-z]*f` +
-	`|--force(?:\s|$|;|&|\|)` + // bare --force (force-with-lease stripped before match)
-	`|push -f\b|push --force` +
-	`|rm -rf|rm -fr|rm -r -f` +
-	`|drop table|drop database|truncate|delete from` +
-	`|terraform apply|terraform destroy|--auto-approve` +
-	`|kubectl delete|fly destroy|railway delete|vercel rm` +
-	`|npm publish|pnpm publish|yarn publish|twine upload`)
+// dangerousToolNameRe catches structured integrations where the operation is
+// expressed by the tool name rather than a shell command. The verbs mirror
+// destructive operation in the approval prompt's closed deny list. Ordinary
+// create, apply, update and upload operations are intentionally absent because
+// the prompt explicitly approves them. Word boundaries are underscore/hyphen
+// aware, so `submit_result`, `update_assignment`, and `upload_file` stay routine.
+var dangerousToolNameRe = regexp.MustCompile(`(?:^|[_-])(?:clean|delete|destroy|drop|erase|flush|force|merge|publish|purge|remove|reset|rm|truncate|wipe)(?:[_-]|$)`)
 
-// psqlRe matches an invocation of psql anywhere in a command chain.
-var psqlRe = regexp.MustCompile(`(?:^|[^a-z])psql\b`)
+// destructiveBulkToolNameRe is intentionally compound: "bulk" alone is not
+// dangerous, while updating every row or bulk deletion is the destructive
+// database shape named by the prompt.
+var destructiveBulkToolNameRe = regexp.MustCompile(`(?:^|[_-])(?:bulk[_-](?:delete|remove|truncate)|bulk[_-](?:update|mutate)[_-]all|update[_-]all[_-]rows?)(?:[_-]|$)`)
 
-// sqlMutationRe matches anything that stops a psql invocation counting as a
-// pure read: SQL keywords that change data or schema, and the forms (-f/--file,
-// \i, \o, \copy) that run or write SQL we can't see inline. `do` and `call`
-// are SQL here but also shell-loop words — a psql chain wrapped in `for ...;
-// do` just falls through to the LLM, which is the status quo, not a new deny.
-var sqlMutationRe = regexp.MustCompile(`\b(insert|update|delete|drop|truncate|alter|create|grant|revoke|copy|call|do|merge|cluster|reindex|vacuum|refresh)\b` +
-	`|(^|\s)-f\b|--file\b|\\i\b|\\o\b`)
+// dangerousOperationValueRe catches generic proxy tools whose operation is in
+// structured input rather than the tool name, for example
+// {"operation":"delete_dataset"}. Prose-bearing tools are handled by the
+// always-safe list before their payload is scanned.
+var dangerousOperationValueRe = regexp.MustCompile(`"(?:action|operation|operation_name|op|verb|command_name)"\s*:\s*"(?:[^"]*[_ -])?(?:clean|delete|destroy|drop|erase|flush|force|merge|publish|purge|remove|reset|rm|truncate|wipe)(?:[_ -][^"]*)?"`)
 
-// bashCommandDecision returns "approve" for a known-safe-but-misjudged command,
-// or "" to fall through to the LLM. Conservative by construction: it only
-// approves when the command hits a safe target AND contains no danger marker.
-func bashCommandDecision(command string) string {
-	lower := strings.ToLower(command)
-	// A psql call whose inline SQL contains no mutating keyword is a read.
-	// Decided here because the evaluator intermittently flags the inline
-	// connection-string password as "credential exposure" — a hygiene opinion,
-	// not a danger — and deterministic approval is the only way to stop the
-	// flapping. Anything resembling a write, or SQL read from a file, still
-	// goes to the LLM.
-	readOnlyPsql := psqlRe.MatchString(lower) && !sqlMutationRe.MatchString(lower)
-	if !safeBashCommandRe.MatchString(lower) && !readOnlyPsql {
-		return "" // not one of our targets — leave it to the LLM
+var destructiveBulkOperationValueRe = regexp.MustCompile(`"(?:action|operation|operation_name|op|verb|command_name)"\s*:\s*"(?:bulk[_ -](?:delete|remove|truncate)|bulk[_ -](?:update|mutate)[_ -]all|update[_ -]all[_ -]rows?)(?:[_ -][^"]*)?"`)
+
+var (
+	camelAcronymBoundaryRe = regexp.MustCompile(`([A-Z]+)([A-Z][a-z])`)
+	camelWordBoundaryRe    = regexp.MustCompile(`([a-z0-9])([A-Z])`)
+	rmInvocationRe         = regexp.MustCompile(`\brm\b[^\n;&|]*`)
+	gitCleanInvocationRe   = regexp.MustCompile(`\bgit\b[^\n;&|]*\bclean\b[^\n;&|]*`)
+	shellTokenRe           = regexp.MustCompile(`'[^']*'|"[^"]*"|\S+`)
+)
+
+func normalizeOperationName(name string) string {
+	name = camelAcronymBoundaryRe.ReplaceAllString(name, `${1}_${2}`)
+	name = camelWordBoundaryRe.ReplaceAllString(name, `${1}_${2}`)
+	return strings.ToLower(name)
+}
+
+// alwaysSafeTools carry prose or file contents rather than an executable
+// operation. Scanning their payload for words such as "DELETE" would mistake a
+// patch, task prompt, or message *about* danger for the dangerous action itself.
+var alwaysSafeTools = map[string]bool{
+	"Edit": true, "Write": true, "MultiEdit": true, "NotebookEdit": true,
+	"apply_patch": true, "Agent": true, "Task": true, "SendMessage": true,
+	"SendUserFile": true, "PushNotification": true, "RemoteTrigger": true,
+	"Workflow": true, "Artifact": true, "EnterWorktree": true,
+	"ExitWorktree": true, "CronCreate": true, "CronUpdate": true,
+	"update_plan": true,
+}
+
+// commandNeedsEvaluator reports whether an inspectable command carries a
+// danger or ambiguity marker. force-with-lease is explicitly safe; stripping
+// it prevents the conservative force-push marker from catching the substring.
+func commandNeedsEvaluator(command string) bool {
+	guard := strings.ReplaceAll(strings.ToLower(command), "--force-with-lease", "")
+	if exfilSinkRe.MatchString(guard) {
+		return true
 	}
-	// Strip force-with-lease so the bare `--force` danger check below doesn't
-	// trip on it — `git push --force-with-lease` is routine post-rebase work.
-	guard := strings.ReplaceAll(lower, "--force-with-lease", "")
-	if dangerBashRe.MatchString(guard) {
-		return "" // chain contains something destructive — let the LLM decide
+	if recursiveRMNeedsEvaluator(guard) || destructiveGitClean(guard) {
+		return true
+	}
+	for _, pattern := range dangerCommandRes {
+		if pattern.MatchString(guard) {
+			return true
+		}
+	}
+	return false
+}
+
+// recursiveRMNeedsEvaluator preserves the prompt's exact boundary: explicit
+// /tmp and /private/tmp targets are safe; absolute/home paths and a sweep of
+// the working tree reach Haiku. Scoped relative cleanup is routine. Variable
+// paths remain ambiguous, and each invocation in a compound command is checked
+// independently.
+func recursiveRMNeedsEvaluator(command string) bool {
+	for _, invocation := range rmInvocationRe.FindAllString(command, -1) {
+		tokens := shellTokenRe.FindAllString(invocation, -1)
+		if len(tokens) < 2 {
+			continue
+		}
+		recursive := false
+		var targets []string
+		optionsDone := false
+		for _, rawToken := range tokens[1:] {
+			token := strings.Trim(rawToken, `'"`)
+			if token == "--" {
+				optionsDone = true
+				continue
+			}
+			if !optionsDone && strings.HasPrefix(token, "-") {
+				if token == "--recursive" || (!strings.HasPrefix(token, "--") && strings.Contains(token[1:], "r")) {
+					recursive = true
+				}
+				continue
+			}
+			if strings.Contains(token, ">") {
+				continue
+			}
+			targets = append(targets, token)
+		}
+		if !recursive {
+			continue
+		}
+		if len(targets) == 0 {
+			return true
+		}
+		for _, target := range targets {
+			cleaned := filepath.Clean(target)
+			if strings.ContainsAny(cleaned, "$`") {
+				return true
+			}
+			if cleaned == "/tmp" || strings.HasPrefix(cleaned, "/tmp/") ||
+				cleaned == "/private/tmp" || strings.HasPrefix(cleaned, "/private/tmp/") {
+				continue
+			}
+			if strings.HasPrefix(cleaned, "/") || strings.HasPrefix(cleaned, "~") ||
+				cleaned == "." || cleaned == ".." || strings.ContainsAny(cleaned, "*?[") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// destructiveGitClean matches the denied directory sweep, including split and
+// long flag spellings. A force-clean of named files without -d is recoverable
+// and is not on the prompt's closed deny list.
+func destructiveGitClean(command string) bool {
+	for _, invocation := range gitCleanInvocationRe.FindAllString(command, -1) {
+		tokens := shellTokenRe.FindAllString(invocation, -1)
+		cleanAt := -1
+		for i := 1; i < len(tokens); i++ {
+			token := strings.Trim(tokens[i], `'"`)
+			if token == "-c" || token == "-C" || token == "--git-dir" || token == "--work-tree" || token == "--namespace" {
+				i++ // each of these global flags consumes its next token
+				continue
+			}
+			if strings.HasPrefix(token, "-") {
+				continue
+			}
+			if token == "clean" {
+				cleanAt = i
+			}
+			break // first non-global-option token is the git subcommand
+		}
+		if cleanAt < 0 {
+			continue
+		}
+		force, directories, dryRun := false, false, false
+		for _, rawToken := range tokens[cleanAt+1:] {
+			token := strings.Trim(rawToken, `'"`)
+			switch token {
+			case "--force":
+				force = true
+			case "--directories":
+				directories = true
+			case "--dry-run":
+				dryRun = true
+			default:
+				if strings.HasPrefix(token, "-") && !strings.HasPrefix(token, "--") {
+					flags := token[1:]
+					force = force || strings.Contains(flags, "f")
+					directories = directories || strings.Contains(flags, "d")
+					dryRun = dryRun || strings.Contains(flags, "n")
+				}
+			}
+		}
+		if force && directories && !dryRun {
+			return true
+		}
+	}
+	return false
+}
+
+// bashCommandDecision deterministically approves every inspectable routine
+// command. An empty command is ambiguous; danger markers fall through to the
+// evaluator for the final approve/deny judgment.
+func bashCommandDecision(command string) string {
+	if strings.TrimSpace(command) == "" || commandNeedsEvaluator(command) {
+		return ""
 	}
 	return "approve"
 }
 
 // FailOpenDecision decides a tool call when the LLM evaluator is unavailable
-// (API timeout/outage, even after retry). Pilot degrades to deny-list mode
-// rather than blocking every request on transient infra trouble: approve
-// unless the command carries a known danger marker. Bash commands matching
-// dangerBashRe — and bash input we can't extract a command from — still ask.
+// (API timeout/outage, even after retry). Pilot applies the same deterministic
+// boundary as normal mode: inspectable routine calls approve, while danger
+// markers and malformed or opaque input ask the user.
 func FailOpenDecision(toolName, toolInput string) string {
-	if !bashTools[toolName] {
-		return "approve"
-	}
 	var parsed map[string]any
-	if len(toolInput) > 0 && toolInput[0] == '{' {
-		_ = json.Unmarshal([]byte(toolInput), &parsed)
+	rawInput := strings.TrimSpace(toolInput)
+	if len(rawInput) == 0 || rawInput[0] != '{' ||
+		json.Unmarshal([]byte(rawInput), &parsed) != nil || parsed == nil {
+		return "ask"
+	}
+
+	if !bashTools[toolName] {
+		if CheckPilotRules(&config.PilotConfig{}, toolName, parsed, "") == "approve" {
+			return "approve"
+		}
+		return "ask"
 	}
 	cmd := extractBashCommand(parsed)
 	if cmd == "" {
 		return "ask" // can't inspect the command — stay conservative
 	}
-	guard := strings.ReplaceAll(strings.ToLower(cmd), "--force-with-lease", "")
-	if dangerBashRe.MatchString(guard) {
+	if commandNeedsEvaluator(cmd) {
 		return "ask"
 	}
 	return "approve"
@@ -195,6 +309,10 @@ func FailOpenDecision(toolName, toolInput string) string {
 // parsed is the pre-parsed toolInput JSON (nil if not JSON).
 // Returns "approve", "deny", or "" (no match, fall through to LLM).
 func CheckPilotRules(cfg *config.PilotConfig, toolName string, parsed map[string]any, cwd string) string {
+	if parsed == nil {
+		return ""
+	}
+
 	if bashTools[toolName] {
 		if cmd := extractBashCommand(parsed); cmd != "" {
 			return bashCommandDecision(cmd)
@@ -212,32 +330,36 @@ func CheckPilotRules(cfg *config.PilotConfig, toolName string, parsed map[string
 	if inertTools[toolName] {
 		return "approve"
 	}
-
-	if !readOnlyTools[toolName] {
-		return "" // Not a read-only tool — fall through
-	}
-
-	// Auto-approve read-only tools that target the working directory.
-	// Out-of-cwd reads fall through to LLM evaluation.
-	target := extractReadTarget(toolName, parsed)
-	if target == "" {
-		return "approve" // No path to check (e.g. Grep with no explicit path) — approve
-	}
-
-	abs, err := filepath.Abs(target)
-	if err != nil {
+	if alwaysSafeTools[toolName] {
 		return "approve"
 	}
 
-	if cwd != "" {
-		absCwd, err := filepath.Abs(cwd)
-		if err == nil && isWithinDir(abs, absCwd) {
-			return "approve"
+	if !readOnlyTools[toolName] {
+		// Unknown structured tools are routine by default once their input is
+		// inspectable. Tool-name danger verbs, HTTP DELETE, SQL destruction and
+		// capture endpoints are the residual cases that still need Haiku.
+		encoded, err := json.Marshal(parsed)
+		if err != nil {
+			return ""
 		}
+		normalizedToolName := normalizeOperationName(toolName)
+		lower := strings.ToLower(toolName + " " + string(encoded))
+		normalizedPayload := strings.ToLower(normalizeOperationName(string(encoded)))
+		if dangerousToolNameRe.MatchString(normalizedToolName) ||
+			destructiveBulkToolNameRe.MatchString(normalizedToolName) ||
+			dangerousOperationValueRe.MatchString(normalizedPayload) ||
+			destructiveBulkOperationValueRe.MatchString(normalizedPayload) ||
+			exfilSinkRe.MatchString(lower) ||
+			commandNeedsEvaluator(lower) {
+			return ""
+		}
+		return "approve"
 	}
 
-	// Out-of-cwd read — fall through to LLM evaluation
-	return ""
+	// Reads never mutate or publish data. The approval prompt explicitly allows
+	// inspecting the user's dotfiles, installed software, and other local paths,
+	// so path location is not a reason to spend an evaluator call.
+	return "approve"
 }
 
 // extractBashCommand pulls the shell command string from pre-parsed tool input.
@@ -277,29 +399,6 @@ func extractURL(parsed map[string]any) string {
 	for _, key := range []string{"url", "URL"} {
 		if u, ok := parsed[key].(string); ok && u != "" {
 			return u
-		}
-	}
-	return ""
-}
-
-// extractReadTarget pulls the file/directory path from pre-parsed read-only tool input.
-func extractReadTarget(toolName string, parsed map[string]any) string {
-	if parsed == nil {
-		return ""
-	}
-
-	switch toolName {
-	case "Read":
-		if fp, ok := parsed["file_path"].(string); ok {
-			return fp
-		}
-	case "Grep":
-		if p, ok := parsed["path"].(string); ok {
-			return p
-		}
-	case "Glob":
-		if p, ok := parsed["path"].(string); ok {
-			return p
 		}
 	}
 	return ""
