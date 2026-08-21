@@ -8,6 +8,7 @@ package approve
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/NiallBrickell/pilot/internal/config"
 )
@@ -27,8 +28,10 @@ func Evaluate(cfg *config.PilotConfig, toolName, toolInput, cwd string) *Decisio
 func EvaluateForRuntime(cfg *config.PilotConfig, runtime, toolName, toolInput, cwd string) *Decision {
 	// Parse toolInput JSON once — reused by all layers.
 	var parsed map[string]any
-	if len(toolInput) > 0 && toolInput[0] == '{' {
-		_ = json.Unmarshal([]byte(toolInput), &parsed)
+	rawInput := strings.TrimSpace(toolInput)
+	if len(rawInput) == 0 || rawInput[0] != '{' ||
+		json.Unmarshal([]byte(rawInput), &parsed) != nil || parsed == nil {
+		return nil
 	}
 
 	if runtime == "" || runtime == "claude" {

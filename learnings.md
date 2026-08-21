@@ -38,6 +38,32 @@ Settings files from most local to most global. Each file checked independently â
 
 Within each file: deny > ask > allow. `defaultMode: "acceptEdits"` auto-approves Write/Edit/NotebookEdit.
 
+### A closed deny list needs a deterministic safe default
+
+Routing every Layer-2 miss to Haiku inverted the approval policy: a production
+ledger showed 69% of calls paying for evaluation even though 99% of evaluator
+outcomes were approvals. Routine, inspectable calls now approve locally; only a
+complete marker for the prompt's destructive/exfiltration boundary, or input that
+cannot be inspected, reaches Haiku.
+
+Normal and degraded operation must share that exact boundary. A blanket
+"non-Bash tools approve" outage fallback let structured calls such as dataset
+deletion, HTTP DELETE and capture-endpoint uploads bypass markers that normal mode
+correctly caught. Both paths now parse the structured payload and ask on malformed
+or opaque input.
+
+Billing failures are state, not transient noise. Anthropic's typed status/error
+contract determines retries (transport errors, 408/409/429 and 5xx only), and a
+`billing_error` or legacy low-balance response opens a process circuit breaker.
+This prevents one exhausted balance from producing another HTTP request and retry
+for every tool invocation.
+
+Prompt caching is an optimization, never an assumption. Requests opt into the
+current top-level ephemeral cache, but models may skip short prefixes. Treat the
+response's cache-creation and cache-read token counters as the authority, expose
+them in debug telemetry, and price reported writes/reads separately in spend
+accounting.
+
 ### Hook matchers
 
 Each hook invocation = one OS process spawn + one HTTP roundtrip to serve. Two PreToolUse hooks (approve + interrogate) means 2 processes per matched tool call.

@@ -33,8 +33,8 @@ func TestWebToolDecision(t *testing.T) {
 		{"pastebin", "WebFetch", `{"url":"https://pastebin.com/raw/AbCd1234"}`, ""},
 		{"ngrok tunnel", "WebFetch", `{"url":"https://a1b2.ngrok.io/exfil"}`, ""},
 
-		// Unrelated tools keep their existing routing.
-		{"bash untouched", "Bash", `{"command":"go test ./..."}`, ""},
+		// Routine shell calls now settle deterministically too.
+		{"bash untouched", "Bash", `{"command":"go test ./..."}`, "approve"},
 	}
 
 	cfg := &config.PilotConfig{}

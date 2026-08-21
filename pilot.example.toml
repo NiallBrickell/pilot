@@ -18,7 +18,9 @@ max_concurrent_evals = 4
 evaluator_timeout_ms = 15000
 # Monthly Anthropic evaluator spend cap in USD. Set to 0 to disable.
 monthly_spend_cap_usd = 20.0
-# Pricing used for local cost estimates, in USD per million tokens.
+# Pricing used for local cost estimates, in USD per million tokens. When the
+# API reports prompt-cache usage, writes use 1.25x and reads 0.1x this input rate.
+# A zero cache counter means the model skipped caching for that response.
 input_cost_per_mtok_usd = 1.0
 output_cost_per_mtok_usd = 5.0
 # Confidence threshold for interrogation redirects (0.0 - 1.0)
