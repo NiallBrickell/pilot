@@ -390,6 +390,19 @@ All runtime state is stored in `~/.pilot/` (override with `$PILOT_HOME`):
 | `PILOT_STATE_FILE` | `$PILOT_HOME/state.json` | Override state file path |
 | `ANTHROPIC_API_KEY` | *(none)* | Anthropic API key (also checked in `~/.pilot/.env`) |
 
+### Local-only control plane
+
+`pilot serve` binds its HTTP server to IPv4 loopback (`127.0.0.1`) only. The
+server exposes approval, hook-management, and configuration routes, so it is an
+authority boundary rather than a service to publish on a host, VPC, or public
+network. The loopback listener also keeps ordinary bridge-networked containers
+from calling the host's privileged Pilot routes.
+
+Do not put the server behind a public reverse proxy or run an untrusted worker
+with host networking. For remote operator access, use an authenticated SSH
+port-forward to `127.0.0.1:9721`; outbound webhooks remain the intended
+server-to-server integration.
+
 ## Integrating with your own app
 
 Pilot exposes two integration points:
