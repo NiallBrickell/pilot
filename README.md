@@ -389,6 +389,7 @@ All runtime state is stored in `~/.pilot/` (override with `$PILOT_HOME`):
 | `PILOT_CONFIG` | `$PILOT_HOME/pilot.toml` | Override config file path |
 | `PILOT_STATE_FILE` | `$PILOT_HOME/state.json` | Override state file path |
 | `ANTHROPIC_API_KEY` | *(none)* | Anthropic API key (also checked in `~/.pilot/.env`) |
+| `PILOT_SERVER_TOKEN` | *(none)* | Optional bearer token required by every POST route and `/internal/auth-check` |
 
 ### Local-only control plane
 
@@ -402,6 +403,25 @@ Do not put the server behind a public reverse proxy or run an untrusted worker
 with host networking. For remote operator access, use an authenticated SSH
 port-forward to `127.0.0.1:9721`; outbound webhooks remain the intended
 server-to-server integration.
+
+For a production process that shares the host with other workloads, set a
+high-entropy `PILOT_SERVER_TOKEN`. When it is non-empty, every POST request must
+carry the exact header `Authorization: Bearer <token>`. Pilot compares bearer
+credentials in constant time and rejects a missing or invalid credential before
+the request body or route handler is reached. The read-only `/status`, `/events`,
+`/logs`, `/config`, and `/internal/profile` routes remain local and public.
+
+Deployment health checks can verify both listener and credential wiring with:
+
+```bash
+curl -fsS -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $PILOT_SERVER_TOKEN" \
+  http://127.0.0.1:9721/internal/auth-check
+```
+
+The authenticated response is `204`; a missing, malformed, or incorrect bearer
+credential receives `401`. With no `PILOT_SERVER_TOKEN`, Pilot keeps its existing
+local desktop behavior and POST requests need no authorization header.
 
 ## Integrating with your own app
 
@@ -433,6 +453,7 @@ Configure `[[webhooks]]` in `pilot.toml` to receive HTTP POST callbacks. Better 
 |----------|--------|-------------|
 | `/events` | GET | SSE event stream |
 | `/status` | GET | Current pilot state + hooks status as JSON |
+| `/internal/auth-check` | GET | Authenticated deployment challenge (`204` on success) |
 | `/approve/{id}` | POST | Approve a pending escalated call |
 | `/reject/{id}` | POST | Reject a pending escalated call |
 | `/hooks/install` | POST | Install pilot hooks into Claude Code and Codex config |

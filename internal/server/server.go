@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,6 +39,7 @@ type Server struct {
 	interrogationConfidence float64
 	interrogationModel      string
 	interrogationEnabled    bool
+	serverToken             string
 }
 
 // toolCounter tracks tool calls per session for checkpoint logic.
@@ -105,6 +108,7 @@ func New(cfg *config.PilotConfig) *Server {
 		interrogationConfidence: interrogationConf,
 		interrogationModel:      interrogationModel,
 		interrogationEnabled:    interrogationEnabled,
+		serverToken:             os.Getenv("PILOT_SERVER_TOKEN"),
 	}
 }
 
@@ -129,10 +133,11 @@ func (s *Server) newHTTPServer(handler http.Handler) *http.Server {
 	}
 }
 
-func (s *Server) Start() error {
+func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/events", s.handleSSE)
 	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/internal/auth-check", s.handleAuthCheck)
 	mux.HandleFunc("/internal/pending", s.handleInternalPending)
 	mux.HandleFunc("/internal/action", s.handleInternalAction)
 	mux.HandleFunc("/approve/", s.handleApprove)
@@ -147,8 +152,11 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/config/reset-prompts", s.handleResetPrompts)
 	mux.HandleFunc("/logs", s.handleLogs)
 	mux.HandleFunc("/internal/profile", s.handleProfile)
+	return corsMiddleware(s.authenticateRequests(mux))
+}
 
-	s.srv = s.newHTTPServer(corsMiddleware(mux))
+func (s *Server) Start() error {
+	s.srv = s.newHTTPServer(s.handler())
 
 	// Periodically evict stale toolCounts entries (sessions inactive >1h)
 	go func() {
@@ -174,6 +182,27 @@ func (s *Server) Start() error {
 		return err
 	}
 	return nil
+}
+
+func (s *Server) authenticateRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.serverToken != "" && (r.Method == http.MethodPost || r.URL.Path == "/internal/auth-check") {
+			// Hash the complete headers first so the constant-time comparison sees
+			// fixed-size inputs while scheme, spacing, and token remain exact.
+			expected := sha256.Sum256([]byte("Bearer " + s.serverToken))
+			provided := sha256.Sum256([]byte(r.Header.Get("Authorization")))
+			if subtle.ConstantTimeCompare(provided[:], expected[:]) != 1 {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="pilot"`)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) handleAuthCheck(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
@@ -1133,7 +1162,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
