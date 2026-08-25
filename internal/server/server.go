@@ -122,6 +122,13 @@ func (s *Server) Broker() *Broker {
 	return s.broker
 }
 
+func (s *Server) newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:    fmt.Sprintf("127.0.0.1:%d", s.port),
+		Handler: handler,
+	}
+}
+
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/events", s.handleSSE)
@@ -141,10 +148,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/logs", s.handleLogs)
 	mux.HandleFunc("/internal/profile", s.handleProfile)
 
-	s.srv = &http.Server{
-		Addr:    fmt.Sprintf(":%d", s.port),
-		Handler: corsMiddleware(mux),
-	}
+	s.srv = s.newHTTPServer(corsMiddleware(mux))
 
 	// Periodically evict stale toolCounts entries (sessions inactive >1h)
 	go func() {
@@ -165,7 +169,7 @@ func (s *Server) Start() error {
 		}
 	}()
 
-	slog.Info("SSE server starting", "port", s.port)
+	slog.Info("SSE server starting", "address", s.srv.Addr)
 	if err := s.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}

@@ -21,6 +21,15 @@ func TestEvaluatorRetryDelayUsesBoundedRetryAfter(t *testing.T) {
 	}
 }
 
+func TestHTTPServerBindsOnlyToIPv4Loopback(t *testing.T) {
+	srv := &Server{port: 9721}
+	httpServer := srv.newHTTPServer(http.NotFoundHandler())
+
+	if got, want := httpServer.Addr, "127.0.0.1:9721"; got != want {
+		t.Fatalf("HTTP server address = %q, want %q", got, want)
+	}
+}
+
 func TestEstimateUsageCostIncludesPromptCacheTelemetry(t *testing.T) {
 	cfg := &config.PilotConfig{}
 	cfg.General.InputCostPerMTokUSD = 1
