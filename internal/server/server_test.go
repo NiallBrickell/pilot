@@ -1,9 +1,11 @@
 package server
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -89,6 +91,25 @@ func TestServerTokenAuthenticationRunsBeforePostHandlerAndBody(t *testing.T) {
 				t.Fatalf("request body read %d times before authentication", body.reads)
 			}
 		})
+	}
+}
+
+func TestHealthReportsCurrentProcess(t *testing.T) {
+	srv := &Server{}
+	recorder := httptest.NewRecorder()
+	srv.handleHealth(recorder, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("health status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	var health struct {
+		PID int `json:"pid"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&health); err != nil {
+		t.Fatal(err)
+	}
+	if health.PID != os.Getpid() {
+		t.Fatalf("health PID = %d, want %d", health.PID, os.Getpid())
 	}
 }
 

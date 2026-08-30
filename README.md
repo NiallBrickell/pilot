@@ -4,7 +4,7 @@ AI copilot for Claude Code and Codex sessions — auto-approves safe tool calls,
 
 ## What it does
 
-1. **Three-layer approval** — tool calls go through runtime settings where available → Pilot's deterministic danger boundary → Haiku for residual danger or ambiguity. Inspectable routine calls resolve locally.
+1. **Runtime-first approval** — Claude Auto mode and Codex's own permission flow decide routine calls first. Only real permission requests reach Pilot's settings → deterministic danger boundary → Haiku fallback.
 2. **Escalation** — dangerous calls are held for human approval via dashboard, webhook, or future TUI. If no response arrives before timeout, Claude prompts normally and Codex PermissionRequest hooks decline to decide.
 3. **Idle detection** — when an agent stops unnecessarily, Haiku evaluates the transcript and auto-responds with context-aware nudges like "run the tests" or "keep going".
 4. **Interrogation** (opt-in) — periodically checks if the agent is still on track. If it's going in circles or ignoring instructions, pilot redirects it. Off by default; enable with `interrogation_enabled = true`.
@@ -48,7 +48,8 @@ Pilot is for driving a fleet, not for being a better approver in one window.
 ```
 Claude Code / Codex session (any of 20+)
     │
-    ├─ PreToolUse / PermissionRequest hook ──→ pilot approve / pilot codex-approve
+    ├─ Native auto/permission decision
+    │       └─ PermissionRequest only ──→ pilot approve / pilot codex-approve
     │                         │
     │                         POST to pilot serve
     │                         ├─ Layer 1: runtime settings where available (no LLM)
@@ -105,11 +106,11 @@ To stop: `make stop` (or `./pilot stop`). This removes hooks and kills the serve
 
 ### Hook flow
 
-For Claude Code, the `PreToolUse` hook fires for: `Bash`, `Write`, `Edit`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Read`, `Grep`, `Glob`, and `Agent`.
+For Claude Code, Pilot installs approval handling on `PermissionRequest`, not `PreToolUse`. Claude's permission rules and Auto-mode classifier therefore decide ordinary calls first. Pilot runs only when Claude Code is about to request an external permission decision. Optional trajectory checks still use `PreToolUse` because they are guards rather than approvals.
 
 For Codex, Pilot installs `PreToolUse` trajectory-check hooks plus `PermissionRequest` approval hooks for `Bash`, `apply_patch`/`Edit`/`Write`, and MCP tools. It also enables Codex's `exec_permission_approvals` and `request_permissions_tool` feature flags so sandbox/network escalation prompts can flow through `PermissionRequest`. Codex `PreToolUse` can only block, so auto-approval happens in `PermissionRequest`. The trajectory-check hook is off by default; set `interrogation_enabled = true` to enable it.
 
-When a hook fires, `pilot approve` or `pilot codex-approve` POSTs to `pilot serve`, which runs the approval hierarchy:
+When a permission-request hook fires, `pilot approve` or `pilot codex-approve` POSTs to `pilot serve`, which runs the fallback approval hierarchy:
 
 1. **Runtime settings** — for Claude Code, reads `~/.claude/settings.json` and `.claude/settings.local.json` walking up from the session's cwd. For Codex, reads `~/.codex/config.toml` and treats trusted projects as locally approved for routine Bash/edit/write permission requests while still blocking obvious destructive commands.
 2. **Pilot rules** — deterministically approve inspectable routine calls. Calls matching the approval prompt's complete danger/ambiguity markers continue; malformed or opaque structured input never fast-approves.
@@ -175,7 +176,7 @@ Pilot works completely standalone — the dashboard is optional.
 | `pilot upgrade` | Download the latest release binary from GitHub and restart |
 | `pilot dashboard` | Download (if needed) and launch the desktop GUI |
 | `pilot serve` | Start server in foreground (for debugging) |
-| `pilot approve` | Claude Code PreToolUse hook handler |
+| `pilot approve` | Claude Code PermissionRequest hook handler |
 | `pilot codex-approve` | Codex PermissionRequest hook handler |
 | `pilot on-stop` | Claude Code Stop hook handler |
 | `pilot codex-on-stop` | Codex Stop hook handler |
@@ -451,6 +452,7 @@ Configure `[[webhooks]]` in `pilot.toml` to receive HTTP POST callbacks. Better 
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/health` | GET | Lightweight process identity used by startup checks |
 | `/events` | GET | SSE event stream |
 | `/status` | GET | Current pilot state + hooks status as JSON |
 | `/internal/auth-check` | GET | Authenticated deployment challenge (`204` on success) |

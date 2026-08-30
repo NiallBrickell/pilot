@@ -39,7 +39,7 @@ const (
 func init() {
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "approve",
-		Short: "Run as a Claude Code PreToolUse hook (reads tool info from stdin, returns approve/deny)",
+		Short: "Run as a Claude Code PermissionRequest hook",
 		RunE:  func(cmd *cobra.Command, args []string) error { return runApproveForRuntime(runtimeClaude) },
 	})
 	rootCmd.AddCommand(&cobra.Command{
@@ -107,6 +107,10 @@ func runApproveForRuntime(runtime hookRuntime) error {
 	}
 
 	if runtime == runtimeClaude && !auth.IsClaudeAuthed() {
+		if strings.EqualFold(hookEventName, "PermissionRequest") {
+			// Declining to decide preserves Claude Code's normal permission flow.
+			return nil
+		}
 		reason := "pilot: claude not authenticated, skipping"
 		return printJSON(hookResponse{
 			HookSpecificOutput: preToolUseOutput{
@@ -126,6 +130,10 @@ func runApproveForRuntime(runtime hookRuntime) error {
 	if !ok {
 		if runtime == runtimeCodex {
 			slog.Debug("pilot: serve not running, leaving Codex hook undecided")
+			return nil
+		}
+		if strings.EqualFold(hookEventName, "PermissionRequest") {
+			// PermissionRequest handlers fail open by returning no decision.
 			return nil
 		}
 		reason := "pilot: serve not running, allowing"
@@ -184,6 +192,9 @@ func evaluateViaServer(cfg *config.PilotConfig, runtime hookRuntime, toolName, t
 func handleEvalResult(cfg *config.PilotConfig, runtime hookRuntime, hookEventName string, result *evalResult, toolName, toolInput, cwd, sessionID string, cliStart time.Time) error {
 	if runtime == runtimeCodex {
 		return handleCodexEvalResult(cfg, hookEventName, result, toolName, toolInput, cwd, sessionID, cliStart)
+	}
+	if strings.EqualFold(hookEventName, "PermissionRequest") {
+		return handlePermissionRequestResult(cfg, result, toolName, toolInput, cwd, sessionID, cliStart)
 	}
 
 	roundTripMs := float64(time.Since(cliStart).Microseconds()) / 1000.0
@@ -310,7 +321,7 @@ func handleEvalResult(cfg *config.PilotConfig, runtime hookRuntime, hookEventNam
 
 func handleCodexEvalResult(cfg *config.PilotConfig, hookEventName string, result *evalResult, toolName, toolInput, cwd, sessionID string, cliStart time.Time) error {
 	if strings.EqualFold(hookEventName, "PermissionRequest") {
-		return handleCodexPermissionRequestResult(cfg, result, toolName, toolInput, cwd, sessionID, cliStart)
+		return handlePermissionRequestResult(cfg, result, toolName, toolInput, cwd, sessionID, cliStart)
 	}
 	return handleCodexPreToolUseResult(cfg, result, toolName, toolInput, cwd, sessionID, cliStart)
 }
@@ -356,7 +367,7 @@ func handleCodexPreToolUseResult(cfg *config.PilotConfig, result *evalResult, to
 	return nil
 }
 
-func handleCodexPermissionRequestResult(cfg *config.PilotConfig, result *evalResult, toolName, toolInput, cwd, sessionID string, cliStart time.Time) error {
+func handlePermissionRequestResult(cfg *config.PilotConfig, result *evalResult, toolName, toolInput, cwd, sessionID string, cliStart time.Time) error {
 	roundTripMs := float64(time.Since(cliStart).Microseconds()) / 1000.0
 
 	if result.Decision == "ask" {
@@ -373,7 +384,7 @@ func handleCodexPermissionRequestResult(cfg *config.PilotConfig, result *evalRes
 			DurationMs: &roundTripMs,
 			Source:     result.Source,
 		})
-		return printCodexPermissionDecision("allow", "")
+		return printPermissionDecision("allow", "")
 	}
 
 	confidence := 0.0
@@ -389,7 +400,7 @@ func handleCodexPermissionRequestResult(cfg *config.PilotConfig, result *evalRes
 			DurationMs: &roundTripMs,
 			Source:     result.Source,
 		})
-		return printCodexPermissionDecision("allow", "")
+		return printPermissionDecision("allow", "")
 	}
 	if outcome == "human_rejected" {
 		_ = state.RecordAction(state.PilotAction{
@@ -400,10 +411,10 @@ func handleCodexPermissionRequestResult(cfg *config.PilotConfig, result *evalRes
 			DurationMs: &roundTripMs,
 			Source:     result.Source,
 		})
-		return printCodexPermissionDecision("deny", "pilot: human rejected this approval request")
+		return printPermissionDecision("deny", "pilot: human rejected this approval request")
 	}
 
-	// Let Codex show its normal approval prompt on timeout or dashboard errors.
+	// Let the runtime show its normal approval prompt on timeout or dashboard errors.
 	_ = state.RecordAction(state.PilotAction{
 		Timestamp:  now,
 		ActionType: state.Escalate,
@@ -425,7 +436,7 @@ func printCodexPreToolUseBlock(reason string) error {
 	})
 }
 
-func printCodexPermissionDecision(behavior, message string) error {
+func printPermissionDecision(behavior, message string) error {
 	decision := map[string]any{"behavior": behavior}
 	if message != "" {
 		decision["message"] = message
