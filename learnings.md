@@ -73,6 +73,13 @@ Each hook invocation = one OS process spawn + one HTTP roundtrip to serve.
 - **approve**: `PermissionRequest` with `".*"` — Claude Auto mode and native permission rules resolve routine calls before this hook runs.
 - **interrogate**: `".*"` — fires on every tool call. Server-side cadence logic (1st, 5th, every 25th per user turn) short-circuits most calls immediately. Keeping the broad matcher preserves full visibility into off-track behaviour.
 
+The dashboard must not maintain its own hook installer. A CLI migration moved
+Claude approval from `PreToolUse` to `PermissionRequest`, but the duplicated
+dashboard implementation restored the old hook as soon as the updated dashboard
+started. Dashboard lifecycle actions now upgrade and delegate to the canonical
+CLI installer; startup treats stale Claude or Codex hook/config state as a
+migration to repair.
+
 ## The MBP incident
 
 Running `wails dev` from a background shell process (`&`) caused the GUI app to spin trying to attach to a display context. Combined with pilot hooks firing on every tool call (spawning `claude -p` per call across 20 sessions), this pegged all 24 cores and nearly kernel panicked an M4 MBP.

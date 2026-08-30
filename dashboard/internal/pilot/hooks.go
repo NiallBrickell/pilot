@@ -2,9 +2,13 @@ package pilot
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 type HookStatus struct {
@@ -27,348 +31,130 @@ func codexConfigPath() string {
 	return filepath.Join(home, ".codex", "config.toml")
 }
 
+// CheckHooksInstalled is deliberately event-aware. A legacy Pilot approval in
+// Claude's PreToolUse event is not a healthy install: it runs before Claude Auto
+// Mode and was the source of the prompts this dashboard is meant to prevent.
 func CheckHooksInstalled() HookStatus {
 	claudePath := claudeSettingsPath()
 	codexPath := codexHooksPath()
-	installed := false
-	cfg, _ := ReadPilotConfig()
-	stopOK := func(content, marker string) bool {
-		return !cfg.General.StopHookReplies || strings.Contains(content, marker)
-	}
-	interrogateOK := func(content, marker string) bool {
-		return !cfg.General.InterrogationEnabled || strings.Contains(content, marker)
-	}
-	if data, err := os.ReadFile(claudePath); err == nil {
-		content := string(data)
-		installed = installed || (strings.Contains(content, "pilot approve") &&
-			interrogateOK(content, "pilot interrogate") &&
-			stopOK(content, "pilot on-stop"))
-	}
-	if data, err := os.ReadFile(codexPath); err == nil {
-		content := string(data)
-		installed = installed || (strings.Contains(content, "pilot codex-approve") &&
-			interrogateOK(content, "pilot codex-interrogate") &&
-			stopOK(content, "pilot codex-on-stop"))
-	}
+	installed := hookEventContains(claudePath, "PermissionRequest", "pilot approve") &&
+		hookEventContains(codexPath, "PermissionRequest", "pilot codex-approve") &&
+		codexConfigHealthy(codexConfigPath())
 	return HookStatus{Installed: installed, SettingsPath: claudePath + " / " + codexPath}
 }
 
+// HooksNeedRepair lets a newly updated dashboard repair stale Claude and Codex
+// hooks/config written by older dashboard/CLI builds, even when the CLI that
+// launched it is stale. A completely disabled install stays disabled.
+func HooksNeedRepair() bool {
+	if !fileContains(claudeSettingsPath(), "pilot ") && !fileContains(codexHooksPath(), "pilot ") {
+		return false
+	}
+	return !CheckHooksInstalled().Installed
+}
+
+func hookEventContains(path, event, commandMarker string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var settings map[string]any
+	if json.Unmarshal(data, &settings) != nil {
+		return false
+	}
+	hooks, _ := settings["hooks"].(map[string]any)
+	entries, _ := hooks[event].([]any)
+	for _, entry := range entries {
+		encoded, _ := json.Marshal(entry)
+		if strings.Contains(string(encoded), commandMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+func fileContains(path, marker string) bool {
+	data, err := os.ReadFile(path)
+	return err == nil && strings.Contains(string(data), marker)
+}
+
+func codexConfigHealthy(path string) bool {
+	var cfg struct {
+		ApprovalsReviewer string `toml:"approvals_reviewer"`
+		Features          struct {
+			Hooks                   bool `toml:"hooks"`
+			ExecPermissionApprovals bool `toml:"exec_permission_approvals"`
+			RequestPermissionsTool  bool `toml:"request_permissions_tool"`
+			DeprecatedCodexHooks    bool `toml:"codex_hooks"`
+		} `toml:"features"`
+		Hooks struct {
+			State map[string]map[string]any `toml:"state"`
+		} `toml:"hooks"`
+	}
+	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		return false
+	}
+	if cfg.ApprovalsReviewer != "auto_review" || !cfg.Features.Hooks ||
+		!cfg.Features.ExecPermissionApprovals || !cfg.Features.RequestPermissionsTool ||
+		cfg.Features.DeprecatedCodexHooks {
+		return false
+	}
+	for key, state := range cfg.Hooks.State {
+		if strings.Contains(key, ":permission_request:") {
+			if hash, ok := state["trusted_hash"].(string); ok && strings.HasPrefix(hash, "sha256:") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// InstallHooks delegates lifecycle ownership to the CLI. Keeping a second hook
+// policy in the dashboard caused it to restore a legacy PreToolUse approval
+// immediately after the CLI had migrated approval to PermissionRequest.
+//
+// Run upgrade first because an old CLI can launch a newly downloaded dashboard.
+// The upgraded CLI's start command then performs the canonical hook migration.
 func InstallHooks() error {
 	bin, err := FindPilotBinary()
 	if err != nil {
 		return err
 	}
-	if err := installClaudeHooks(bin); err != nil {
-		return err
+	if out, upgradeErr := exec.Command(bin, "upgrade").CombinedOutput(); upgradeErr != nil {
+		// Starting the available CLI is still useful offline. If that also fails,
+		// include the update failure in the surfaced error below.
+		startErr := runPilotStart(bin)
+		if startErr != nil {
+			return fmt.Errorf("pilot update failed (%v: %s); start failed: %w", upgradeErr, strings.TrimSpace(string(out)), startErr)
+		}
+		return nil
 	}
-	return installCodexHooks(bin)
+
+	// upgrade starts a newly installed release itself, but a no-op upgrade does
+	// not. Re-resolve because upgrade may have moved Pilot to ~/.pilot/bin/pilot;
+	// start is idempotent and also repairs hooks if the server was already up.
+	if current, findErr := FindPilotBinary(); findErr == nil {
+		bin = current
+	}
+	return runPilotStart(bin)
 }
 
-func installClaudeHooks(bin string) error {
-	path := claudeSettingsPath()
-
-	settings := make(map[string]any)
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &settings)
+func runPilotStart(bin string) error {
+	cmd := exec.Command(bin, "start")
+	cmd.Env = append(os.Environ(), "PILOT_SKIP_AUTO_UPGRADE=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s start: %w: %s", bin, err, strings.TrimSpace(string(out)))
 	}
-
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks == nil {
-		hooks = make(map[string]any)
-	}
-
-	pilotPreToolUse := map[string]any{
-		"matcher": "^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch|Read|Grep|Glob|Agent)$",
-		"hooks": []any{
-			map[string]any{
-				"type":    "command",
-				"command": bin + " approve",
-			},
-		},
-	}
-
-	pilotInterrogate := map[string]any{
-		"matcher": ".*",
-		"hooks": []any{
-			map[string]any{
-				"type":    "command",
-				"command": bin + " interrogate",
-			},
-		},
-	}
-
-	pilotStop := map[string]any{
-		"hooks": []any{
-			map[string]any{
-				"type":    "command",
-				"command": bin + " on-stop",
-			},
-		},
-	}
-
-	cfg, err := ReadPilotConfig()
-	if err != nil {
-		cfg.General.StopHookReplies = true
-		cfg.General.InterrogationEnabled = false
-	}
-	preToolUseEntries := []map[string]any{pilotPreToolUse}
-	if cfg.General.InterrogationEnabled {
-		preToolUseEntries = append(preToolUseEntries, pilotInterrogate)
-	}
-	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], preToolUseEntries...)
-	if cfg.General.StopHookReplies {
-		hooks["Stop"] = mergeHookEntries(hooks["Stop"], pilotStop)
-	} else {
-		removePilotEntries(hooks, "Stop")
-	}
-
-	settings["hooks"] = hooks
-
-	data, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-
-	return os.WriteFile(path, data, 0644)
-}
-
-func installCodexHooks(bin string) error {
-	if err := ensureCodexFeatures(codexConfigPath()); err != nil {
-		return err
-	}
-	cfg, err := ReadPilotConfig()
-	if err != nil {
-		cfg.General.StopHookReplies = true
-		cfg.General.InterrogationEnabled = false
-	}
-
-	path := codexHooksPath()
-	settings := make(map[string]any)
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &settings)
-	}
-
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks == nil {
-		hooks = make(map[string]any)
-	}
-
-	if cfg.General.InterrogationEnabled {
-		hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], map[string]any{
-			"matcher": ".*",
-			"hooks": []any{
-				map[string]any{"type": "command", "command": bin + " codex-interrogate", "timeout": 90, "statusMessage": "Pilot checking trajectory"},
-			},
-		})
-	} else {
-		removePilotEntries(hooks, "PreToolUse")
-	}
-	hooks["PermissionRequest"] = mergeHookEntries(hooks["PermissionRequest"],
-		map[string]any{
-			"matcher": ".*",
-			"hooks": []any{
-				map[string]any{"type": "command", "command": bin + " codex-approve", "timeout": 90, "statusMessage": "Pilot reviewing approval"},
-			},
-		},
-	)
-	if cfg.General.StopHookReplies {
-		hooks["Stop"] = mergeHookEntries(hooks["Stop"],
-			map[string]any{
-				"hooks": []any{
-					map[string]any{"type": "command", "command": bin + " codex-on-stop", "timeout": 30, "statusMessage": "Pilot checking whether to continue"},
-				},
-			},
-		)
-	} else {
-		removePilotEntries(hooks, "Stop")
-	}
-
-	settings["hooks"] = hooks
-	data, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
+	return nil
 }
 
 func UninstallHooks() error {
-	if err := uninstallHooksAtPath(claudeSettingsPath(), []string{"PreToolUse", "Stop"}); err != nil {
-		return err
-	}
-	return uninstallHooksAtPath(codexHooksPath(), []string{"PreToolUse", "PermissionRequest", "Stop"})
-}
-
-func uninstallHooksAtPath(path string, keys []string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-
-	settings := make(map[string]any)
-	if err := json.Unmarshal(data, &settings); err != nil {
-		return err
-	}
-
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks == nil {
-		return nil
-	}
-
-	for _, key := range keys {
-		removePilotEntries(hooks, key)
-	}
-
-	if len(hooks) == 0 {
-		delete(settings, "hooks")
-	} else {
-		settings["hooks"] = hooks
-	}
-
-	out, err := json.MarshalIndent(settings, "", "  ")
+	bin, err := FindPilotBinary()
 	if err != nil {
 		return err
 	}
-
-	return os.WriteFile(path, out, 0644)
-}
-
-func mergeHookEntries(existing any, pilotEntries ...map[string]any) []any {
-	var result []any
-	if arr, ok := existing.([]any); ok {
-		for _, entry := range arr {
-			entryJSON, _ := json.Marshal(entry)
-			if isPilotEntry(string(entryJSON)) {
-				continue // Remove old pilot entries
-			}
-			result = append(result, entry)
-		}
+	if out, err := exec.Command(bin, "stop").CombinedOutput(); err != nil {
+		return fmt.Errorf("%s stop: %w: %s", bin, err, strings.TrimSpace(string(out)))
 	}
-	for _, entry := range pilotEntries {
-		result = append(result, entry)
-	}
-	return result
-}
-
-// isPilotEntry returns true if a serialized hook entry belongs to pilot.
-func isPilotEntry(entryJSON string) bool {
-	return strings.Contains(entryJSON, "pilot approve") ||
-		strings.Contains(entryJSON, "pilot interrogate") ||
-		strings.Contains(entryJSON, "pilot on-stop") ||
-		strings.Contains(entryJSON, "pilot codex-approve") ||
-		strings.Contains(entryJSON, "pilot codex-interrogate") ||
-		strings.Contains(entryJSON, "pilot codex-on-stop")
-}
-
-func removePilotEntries(hooks map[string]any, key string) {
-	arr, ok := hooks[key].([]any)
-	if !ok {
-		return
-	}
-	var filtered []any
-	for _, entry := range arr {
-		entryJSON, _ := json.Marshal(entry)
-		if !isPilotEntry(string(entryJSON)) {
-			filtered = append(filtered, entry)
-		}
-	}
-	if len(filtered) == 0 {
-		delete(hooks, key)
-	} else {
-		hooks[key] = filtered
-	}
-}
-
-func ensureCodexFeatures(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
-	required := []string{
-		"codex_hooks",
-		"exec_permission_approvals",
-		"request_permissions_tool",
-	}
-	seen := make(map[string]bool, len(required))
-	content := string(data)
-	lines := strings.Split(content, "\n")
-	inFeatures := false
-	featuresSeen := false
-	var out []string
-
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			if inFeatures {
-				out = appendMissingCodexFeatures(out, required, seen)
-			}
-			inFeatures = trimmed == "[features]"
-			if inFeatures {
-				featuresSeen = true
-			}
-		}
-		if inFeatures {
-			if key, ok := codexFeatureAssignmentKey(trimmed); ok && isRequiredCodexFeature(key, required) {
-				out = append(out, key+" = true")
-				seen[key] = true
-				continue
-			}
-		}
-		if i == len(lines)-1 && trimmed == "" {
-			continue
-		}
-		out = append(out, line)
-	}
-
-	if inFeatures {
-		out = appendMissingCodexFeatures(out, required, seen)
-	}
-	if !featuresSeen {
-		if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
-			out = append(out, "")
-		}
-		out = append(out, "[features]")
-		for _, key := range required {
-			out = append(out, key+" = true")
-		}
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(strings.Join(out, "\n")+"\n"), 0600)
-}
-
-func appendMissingCodexFeatures(out []string, required []string, seen map[string]bool) []string {
-	for _, key := range required {
-		if !seen[key] {
-			out = append(out, key+" = true")
-			seen[key] = true
-		}
-	}
-	return out
-}
-
-func codexFeatureAssignmentKey(trimmed string) (string, bool) {
-	idx := strings.Index(trimmed, "=")
-	if idx == -1 {
-		return "", false
-	}
-	return strings.TrimSpace(trimmed[:idx]), true
-}
-
-func isRequiredCodexFeature(key string, required []string) bool {
-	for _, want := range required {
-		if key == want {
-			return true
-		}
-	}
-	return false
+	return nil
 }

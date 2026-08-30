@@ -51,6 +51,13 @@ func TestBashCommandDecision(t *testing.T) {
 		{"psql select inline password", `cd /tmp && psql "postgresql://claude_code:***REDACTED***@203.0.113.71:5432/integration?sslmode=require" -x -c "SELECT i.id, i.status, i.created_at, i.updated_at, i.refresh_token_expires_at, length(i.credentials) AS cred_len FROM integration i JOIN integration_config c ON c.id = i.config_id WHERE i.id IN ('7acccd92');" 2>&1 | head -60`, "approve"},
 		{"psql dt meta", `PGPASSWORD='x' psql "postgresql://claude_code@203.0.113.71:5432/knowledge" -c '\dt'`, "approve"},
 		{"psql select count chain", `psql "postgresql://u:p@203.0.113.71:5432/knowledge?sslmode=require" -c 'select count(*) from assets'`, "approve"},
+		{"write and run database probe", `cat > scripts/_evalprobe.mjs <<'EOF'
+import fs from "node:fs";
+for (const line of fs.readFileSync(".env.local", "utf8").split("\\n")) { /* load local env */ }
+process.env.DATABASE_URL = "postgresql://agents:***REDACTED***@db.example.test/app?sslmode=require";
+console.log("probe");
+EOF
+node scripts/_evalprobe.mjs 2>&1 | grep -v noise`, "approve"},
 
 		// --- psql operations on the closed deny list remain residual. Other
 		// writes are routine and settle locally. ---

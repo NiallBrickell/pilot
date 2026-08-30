@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -22,6 +23,11 @@ func NewApp() *App {
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 	setDockIcon(icon)
+	if pilot.HooksNeedRepair() {
+		if err := pilot.InstallHooks(); err != nil {
+			log.Printf("failed to migrate legacy Pilot hooks: %v", err)
+		}
+	}
 
 	cfg, err := pilot.ReadPilotConfig()
 	if err == nil && cfg.General.SSEPort != 0 {
@@ -124,16 +130,11 @@ func (a *App) GetPilotStatus() pilot.PilotStatus {
 
 // InstallPilotHooks installs hooks and starts the server.
 func (a *App) InstallPilotHooks() error {
-	if err := pilot.InstallHooks(); err != nil {
-		return err
-	}
-	return pilot.StartServe()
+	return pilot.InstallHooks()
 }
 
 // UninstallPilotHooks removes hooks and stops server.
 func (a *App) UninstallPilotHooks() error {
-	_ = pilot.StopServe()
-	_ = pilot.KillLingering()
 	return pilot.UninstallHooks()
 }
 

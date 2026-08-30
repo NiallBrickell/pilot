@@ -78,7 +78,8 @@ curl -fsSL https://raw.githubusercontent.com/NiallBrickell/pilot/main/install.sh
 
 This downloads the right binary for your OS/arch into `~/.pilot/bin`, installs hooks, and starts the server. Set `ANTHROPIC_API_KEY` first (or write it to `~/.pilot/.env`) — the installer tells you how if it's missing. Add `~/.pilot/bin` to your `PATH` to call `pilot` directly.
 
-To update later:
+`pilot start` checks the latest release before installing hooks, so normal starts
+stay current automatically. To update immediately (or reinstall explicitly):
 
 ```bash
 pilot upgrade        # downloads the latest release and restarts (no-op if already current)
@@ -92,7 +93,7 @@ cd pilot
 make start
 ```
 
-Either way, `pilot start` creates `~/.pilot/` with a default config, installs hooks into `~/.claude/settings.json` and `~/.codex/hooks.json`, enables Codex hooks in `~/.codex/config.toml`, and starts the server. No manual setup needed.
+Either way, `pilot start` checks for a newer release, creates `~/.pilot/` with a default config, installs hooks into `~/.claude/settings.json` and `~/.codex/hooks.json`, enables Codex hooks in `~/.codex/config.toml`, and starts the server. No manual setup needed. `make start` deliberately runs the just-built development binary without the release handoff.
 
 To stop: `make stop` (or `./pilot stop`). This removes hooks and kills the server.
 
@@ -171,7 +172,7 @@ Pilot works completely standalone — the dashboard is optional.
 
 | Command | Description |
 |---------|-------------|
-| `pilot start` | Install hooks, start server, enable pilot |
+| `pilot start` | Update if needed, install hooks, start server, enable pilot |
 | `pilot stop` | Remove hooks, stop server, disable pilot |
 | `pilot upgrade` | Download the latest release binary from GitHub and restart |
 | `pilot dashboard` | Download (if needed) and launch the desktop GUI |
@@ -267,7 +268,7 @@ Optional desktop GUI for pilot. Downloads automatically on first launch — no b
 ./pilot dashboard
 ```
 
-This downloads the prebuilt app from GitHub releases to `~/.pilot/` and launches it. On macOS it opens as a native `.app`.
+This downloads the prebuilt app from GitHub releases to `~/.pilot/` and launches it. On macOS it opens as a native `.app`. The dashboard delegates enable/disable to the CLI rather than carrying a second copy of Claude/Codex hook policy; on startup it repairs hook/config state left by older dashboard builds.
 
 Pushes to `main` run validation CI only. They do not publish new dashboard binaries. To make dashboard changes available through `./pilot dashboard` or `make dashboard`, create and push a `v*` tag; the Release workflow builds the CLI/dashboard artifacts and publishes them to GitHub Releases.
 

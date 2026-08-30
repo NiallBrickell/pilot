@@ -27,7 +27,7 @@ release:
 	@echo "Released $(VERSION) — watch: gh run list --workflow=Release --limit 1"
 
 start: build
-	./pilot start
+	PILOT_SKIP_AUTO_UPGRADE=1 ./pilot start
 
 stop:
 	./pilot stop

@@ -34,6 +34,10 @@ func init() {
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
+	if maybeAutoUpgradeOnStart() {
+		return nil
+	}
+
 	// Auto-setup ~/.pilot/
 	if err := paths.EnsureSetup(config.EmbeddedConfig()); err != nil {
 		return fmt.Errorf("failed to set up %s: %w", paths.PilotDir(), err)

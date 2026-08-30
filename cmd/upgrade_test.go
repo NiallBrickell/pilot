@@ -3,6 +3,8 @@ package cmd
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +89,16 @@ func TestLatestReleaseHTTPError(t *testing.T) {
 	_, _, err := latestRelease(client, "NiallBrickell/pilot", "pilot-darwin-arm64")
 	if err == nil || !strings.Contains(err.Error(), "403") {
 		t.Errorf("expected 403 error, got %v", err)
+	}
+}
+
+func TestInstalledBinaryVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pilot")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf 'pilot version v9.8.7\\n'\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got := installedBinaryVersion(path); got != "v9.8.7" {
+		t.Fatalf("installedBinaryVersion() = %q, want v9.8.7", got)
 	}
 }
 

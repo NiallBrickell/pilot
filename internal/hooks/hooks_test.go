@@ -168,6 +168,25 @@ func TestClaudeApprovalRunsOnlyOnPermissionRequest(t *testing.T) {
 	}
 }
 
+func TestCheckInstalledRejectsLegacyClaudeApproval(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PILOT_CONFIG", filepath.Join(home, "pilot.toml"))
+	path := filepath.Join(home, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"hooks":{"PreToolUse":[{"matcher":".*","hooks":[{"type":"command","command":"/tmp/pilot approve"}]}]}}`
+	if err := os.WriteFile(path, []byte(legacy), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	status := CheckInstalled()
+	if status.ClaudeInstalled || status.Installed {
+		t.Fatalf("legacy PreToolUse approval counted as installed: %+v", status)
+	}
+}
+
 func TestUninstallAllRemovesOnlyPilotHooks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

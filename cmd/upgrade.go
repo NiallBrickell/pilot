@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/NiallBrickell/pilot/internal/paths"
@@ -16,6 +17,8 @@ import (
 
 // releaseRepo is the GitHub repo that publishes pilot release binaries.
 const releaseRepo = "NiallBrickell/pilot"
+
+const skipAutoUpgradeEnv = "PILOT_SKIP_AUTO_UPGRADE"
 
 func init() {
 	cmd := &cobra.Command{
@@ -104,8 +107,69 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	dest, err := installRelease(client, tag, url, asset)
+	if err != nil {
+		return err
+	}
+	return startInstalledPilot(dest)
+}
+
+// maybeAutoUpgradeOnStart keeps `pilot start` aligned with the release that
+// `pilot dashboard` already downloads. It fails open on update-check errors so
+// an offline machine can still start its installed Pilot.
+//
+// The bool reports whether startup was handed off to the newly installed
+// binary. The child receives PILOT_SKIP_AUTO_UPGRADE to prevent recursion.
+func maybeAutoUpgradeOnStart() bool {
+	if os.Getenv(skipAutoUpgradeEnv) != "" {
+		return false
+	}
+	asset, err := assetName(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: couldn't check for Pilot updates: %v\n", err)
+		return false
+	}
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	fmt.Printf("Checking %s for Pilot updates…\n", releaseRepo)
+	tag, url, err := latestRelease(client, releaseRepo, asset)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: couldn't check for Pilot updates; starting %s: %v\n", Version, err)
+		return false
+	}
+	if tag == Version {
+		return false
+	}
+
+	dest := paths.InstalledBinPath()
+	if installedBinaryVersion(dest) != tag {
+		dest, err = installRelease(client, tag, url, asset)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: couldn't install Pilot %s; starting %s: %v\n", tag, Version, err)
+			return false
+		}
+	} else {
+		fmt.Printf("Found Pilot %s at %s; handing off startup…\n", tag, dest)
+	}
+	if err := startInstalledPilot(dest); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: Pilot %s was installed but failed to start; falling back to %s: %v\n", tag, Version, err)
+		return false
+	}
+	return true
+}
+
+func installedBinaryVersion(path string) string {
+	out, err := exec.Command(path, "--version").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(string(out), "pilot version "))
+}
+
+func installRelease(client *http.Client, tag, url, asset string) (string, error) {
+
 	if err := os.MkdirAll(paths.BinDir(), 0755); err != nil {
-		return fmt.Errorf("create %s: %w", paths.BinDir(), err)
+		return "", fmt.Errorf("create %s: %w", paths.BinDir(), err)
 	}
 
 	// Download to a temp file in the same dir so the final swap is an atomic
@@ -114,7 +178,7 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 	// rewritten underneath it.
 	tmp, err := os.CreateTemp(paths.BinDir(), "pilot-download-*")
 	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
+		return "", fmt.Errorf("create temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath) // no-op once renamed away
@@ -122,31 +186,36 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Downloading %s (%s)…\n", asset, tag)
 	if err := download(client, url, tmp); err != nil {
 		tmp.Close()
-		return err
+		return "", err
 	}
 	if err := tmp.Close(); err != nil {
-		return err
+		return "", err
 	}
 	if err := os.Chmod(tmpPath, 0755); err != nil {
-		return fmt.Errorf("chmod: %w", err)
+		return "", fmt.Errorf("chmod: %w", err)
 	}
 
 	// Smoke-test the downloaded binary before trusting it. Use --help, which
 	// every release supports and exits 0, to catch a corrupt or wrong-arch
 	// download without depending on flags newer releases may add.
 	if out, err := exec.Command(tmpPath, "--help").CombinedOutput(); err != nil {
-		return fmt.Errorf("downloaded binary failed to run (%w): %s", err, string(out))
+		return "", fmt.Errorf("downloaded binary failed to run (%w): %s", err, string(out))
 	}
 
 	dest := paths.InstalledBinPath()
 	if err := os.Rename(tmpPath, dest); err != nil {
-		return fmt.Errorf("install to %s: %w", dest, err)
+		return "", fmt.Errorf("install to %s: %w", dest, err)
 	}
 	fmt.Printf("Installed %s to %s\n", tag, dest)
+	return dest, nil
+}
 
+func startInstalledPilot(dest string) error {
 	// Re-exec the freshly installed binary's `start`, which repoints hooks at
-	// this stable path and restarts serve.
+	// this stable path and restarts serve. Suppress its own update check to
+	// avoid a recursive handoff.
 	start := exec.Command(dest, "start")
+	start.Env = append(os.Environ(), skipAutoUpgradeEnv+"=1")
 	start.Stdout = os.Stdout
 	start.Stderr = os.Stderr
 	if err := start.Run(); err != nil {

@@ -29,29 +29,37 @@ func CheckInstalled() Status {
 	}
 
 	cfg := config.Load()
-	stopOK := func(content, marker string) bool {
-		return !cfg.General.StopHookReplies || strings.Contains(content, marker)
-	}
-	interrogateOK := func(content, marker string) bool {
-		return !cfg.General.IsInterrogationEnabled() || strings.Contains(content, marker)
-	}
 
 	if data, err := os.ReadFile(st.ClaudeSettingsPath); err == nil {
-		content := string(data)
-		st.ClaudeInstalled = strings.Contains(content, "pilot approve") &&
-			interrogateOK(content, "pilot interrogate") &&
-			stopOK(content, "pilot on-stop")
+		st.ClaudeInstalled = hookEventContains(data, "PermissionRequest", "pilot approve") &&
+			(!cfg.General.IsInterrogationEnabled() || hookEventContains(data, "PreToolUse", "pilot interrogate")) &&
+			(!cfg.General.StopHookReplies || hookEventContains(data, "Stop", "pilot on-stop"))
 	}
 
 	if data, err := os.ReadFile(st.CodexHooksPath); err == nil {
-		content := string(data)
-		st.CodexInstalled = strings.Contains(content, "pilot codex-approve") &&
-			interrogateOK(content, "pilot codex-interrogate") &&
-			stopOK(content, "pilot codex-on-stop")
+		st.CodexInstalled = hookEventContains(data, "PermissionRequest", "pilot codex-approve") &&
+			(!cfg.General.IsInterrogationEnabled() || hookEventContains(data, "PreToolUse", "pilot codex-interrogate")) &&
+			(!cfg.General.StopHookReplies || hookEventContains(data, "Stop", "pilot codex-on-stop"))
 	}
 
-	st.Installed = st.ClaudeInstalled || st.CodexInstalled
+	st.Installed = st.ClaudeInstalled && st.CodexInstalled
 	return st
+}
+
+func hookEventContains(data []byte, event, marker string) bool {
+	var settings map[string]any
+	if json.Unmarshal(data, &settings) != nil {
+		return false
+	}
+	hooks, _ := settings["hooks"].(map[string]any)
+	entries, _ := hooks[event].([]any)
+	for _, entry := range entries {
+		encoded, _ := json.Marshal(entry)
+		if strings.Contains(string(encoded), marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func InstallAll(pilotBin string) error {
