@@ -135,6 +135,7 @@ func (s *Server) newHTTPServer(handler http.Handler) *http.Server {
 
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/events", s.handleSSE)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/internal/auth-check", s.handleAuthCheck)
@@ -203,6 +204,18 @@ func (s *Server) authenticateRequests(next http.Handler) http.Handler {
 
 func (s *Server) handleAuthCheck(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleHealth is deliberately independent of config, state, and hooks. The
+// launcher uses the PID to prove that the process it spawned owns the listener,
+// rather than accepting an older Pilot instance that happened to answer first.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]int{"pid": os.Getpid()})
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {

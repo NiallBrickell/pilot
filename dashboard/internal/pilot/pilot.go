@@ -1,6 +1,7 @@
 package pilot
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -134,7 +135,7 @@ func StartServe() error {
 	}()
 
 	port := readSSEPort()
-	if err := waitForServe(port, 3*time.Second); err != nil {
+	if err := waitForServe(port, cmd.Process.Pid, 3*time.Second); err != nil {
 		logData, _ := os.ReadFile(logPath)
 		return fmt.Errorf("pilot serve failed to start: %w\n\nServer log:\n%s", err, string(logData))
 	}
@@ -152,21 +153,25 @@ func StopServe() error {
 	return nil
 }
 
-func waitForServe(port int, timeout time.Duration) error {
+func waitForServe(port, expectedPID int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 200 * time.Millisecond}
-	url := fmt.Sprintf("http://localhost:%d/status", port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/health", port)
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(url)
 		if err == nil {
+			var health struct {
+				PID int `json:"pid"`
+			}
+			decodeErr := json.NewDecoder(resp.Body).Decode(&health)
 			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
+			if resp.StatusCode == http.StatusOK && decodeErr == nil && health.PID == expectedPID {
 				return nil
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("server did not respond on port %d within %s", port, timeout)
+	return fmt.Errorf("server process %d did not respond on port %d within %s", expectedPID, port, timeout)
 }
 
 func killPort(port int) {

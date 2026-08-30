@@ -97,37 +97,34 @@ func InstallClaude(pilotBin string) error {
 	}
 
 	cfg := config.Load()
-	// Catch-all, not a tool-name list. The list this replaced was written when
-	// Claude Code had ten tools; every tool shipped since — Monitor, Skill, the
-	// Task family, ToolSearch, Artifact, RemoteTrigger — fell outside it, so the
-	// hook never ran and the permission prompt went straight to the human. That
-	// is the failure the user sees: not pilot judging a call wrongly, but pilot
-	// never being asked. One week of transcripts had ~1,600 calls across 16
-	// unmatched tools. A name list re-breaks on the next tool Claude Code adds;
-	// a catch-all sends the unknown tool to the evaluator, which is a real
-	// decision, instead of to the user.
+	// Approval belongs in PermissionRequest, after Claude Code's own permission
+	// rules and auto-mode classifier have had the first chance to settle the
+	// call. Running approval in PreToolUse evaluates every tool invocation before
+	// auto mode, which both bypasses Claude's classifier and turns routine fleet
+	// traffic into direct Anthropic API spend.
 	//
-	// Safe to widen because an unreachable serve allows rather than blocks (see
-	// "serve not running, allowing" in cmd/approve.go) — a broken pilot cannot
-	// wedge every tool call — and Layer 2's inertTools keeps the session
-	// bookkeeping that now reaches the hook off the LLM path entirely.
-	claudePreToolUseEntries := []map[string]any{
-		{
+	// Keep this matcher catch-all so new tool names do not silently bypass Pilot
+	// when Claude genuinely needs an external permission decision.
+	hooks["PermissionRequest"] = mergeHookEntries(hooks["PermissionRequest"],
+		map[string]any{
 			"matcher": ".*",
 			"hooks": []any{
 				map[string]any{"type": "command", "command": pilotBin + " approve"},
 			},
 		},
-	}
+	)
+
+	// Remove the old approval hook during upgrades. PreToolUse is retained only
+	// for the explicitly enabled trajectory/interrogation check.
+	removePilotHookEntries(hooks, "PreToolUse")
 	if cfg.General.IsInterrogationEnabled() {
-		claudePreToolUseEntries = append(claudePreToolUseEntries, map[string]any{
+		hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], map[string]any{
 			"matcher": ".*",
 			"hooks": []any{
 				map[string]any{"type": "command", "command": pilotBin + " interrogate"},
 			},
 		})
 	}
-	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], claudePreToolUseEntries...)
 	if cfg.General.StopHookReplies {
 		hooks["Stop"] = mergeHookEntries(hooks["Stop"],
 			map[string]any{
@@ -168,7 +165,7 @@ func UninstallClaude() error {
 		return nil
 	}
 
-	for _, key := range []string{"PreToolUse", "Stop"} {
+	for _, key := range []string{"PreToolUse", "PermissionRequest", "Stop"} {
 		removePilotHookEntries(hooks, key)
 	}
 

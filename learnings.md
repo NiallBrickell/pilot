@@ -18,9 +18,11 @@ We went through four iterations:
 - **Concurrency** — separate semaphores in Go (4 approval + 2 idle). Approvals can never be blocked by idle evaluations.
 - **Simpler deployment** — no sidecar process to supervise, no port management, no crash recovery loop.
 
-## Three-layer approval hierarchy
+## Runtime-first approval hierarchy
 
-PreToolUse hooks fire for ALL tool calls, including ones the user has already auto-approved. We went through several iterations:
+Claude `PreToolUse` hooks fire before permission rules and the Auto-mode classifier. Putting Pilot approval there caused every tool call to reach Pilot first: 43,909 direct Haiku approval calls and $125.28 in one month. Approval must run on `PermissionRequest`, after the runtime has decided it needs external help. `PreToolUse` is only for opt-in trajectory guards.
+
+Within Pilot's residual permission-request path, we went through several settings-matching iterations:
 
 | Approach | Issue |
 |----------|-------|
@@ -66,9 +68,9 @@ accounting.
 
 ### Hook matchers
 
-Each hook invocation = one OS process spawn + one HTTP roundtrip to serve. Two PreToolUse hooks (approve + interrogate) means 2 processes per matched tool call.
+Each hook invocation = one OS process spawn + one HTTP roundtrip to serve.
 
-- **approve**: `"^(Bash|Write|Edit|NotebookEdit|WebFetch|WebSearch|Read|Grep|Glob|Agent)$"` — Read/Grep/Glob must be included because pilot auto-approves them (Layer 2), saving the user from Claude's default permission prompts.
+- **approve**: `PermissionRequest` with `".*"` — Claude Auto mode and native permission rules resolve routine calls before this hook runs.
 - **interrogate**: `".*"` — fires on every tool call. Server-side cadence logic (1st, 5th, every 25th per user turn) short-circuits most calls immediately. Keeping the broad matcher preserves full visibility into off-track behaviour.
 
 ## The MBP incident

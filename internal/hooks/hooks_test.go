@@ -95,13 +95,11 @@ func TestInstallAllAddsClaudeAndCodexHooks(t *testing.T) {
 	}
 }
 
-// TestClaudeApproveMatcherCoversUnknownTools pins the catch-all matcher. The
-// tool-name list this replaced silently excluded every tool Claude Code shipped
-// after it was written, and an excluded tool doesn't fail loudly — it just
-// prompts the human, which reads as "pilot approved nothing here". The names
-// below are the ones that were leaking; the invented one stands in for whatever
-// ships next.
-func TestClaudeApproveMatcherCoversUnknownTools(t *testing.T) {
+// TestClaudeApprovalRunsOnlyOnPermissionRequest pins the ordering that keeps
+// Claude auto mode in front of Pilot. PreToolUse fires before Claude's own
+// permission classifier; PermissionRequest fires only when Claude needs an
+// external decision. The catch-all matcher still covers tools added later.
+func TestClaudeApprovalRunsOnlyOnPermissionRequest(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("PILOT_CONFIG", filepath.Join(home, "pilot.toml"))
@@ -122,6 +120,12 @@ func TestClaudeApproveMatcherCoversUnknownTools(t *testing.T) {
 					Command string `json:"command"`
 				} `json:"hooks"`
 			} `json:"PreToolUse"`
+			PermissionRequest []struct {
+				Matcher string `json:"matcher"`
+				Hooks   []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"PermissionRequest"`
 		} `json:"hooks"`
 	}
 	if err := json.Unmarshal(data, &settings); err != nil {
@@ -129,7 +133,7 @@ func TestClaudeApproveMatcherCoversUnknownTools(t *testing.T) {
 	}
 
 	var matcher string
-	for _, entry := range settings.Hooks.PreToolUse {
+	for _, entry := range settings.Hooks.PermissionRequest {
 		for _, h := range entry.Hooks {
 			if strings.HasSuffix(h.Command, "pilot approve") {
 				matcher = entry.Matcher
@@ -137,7 +141,14 @@ func TestClaudeApproveMatcherCoversUnknownTools(t *testing.T) {
 		}
 	}
 	if matcher == "" {
-		t.Fatalf("no pilot approve hook installed:\n%s", data)
+		t.Fatalf("no Pilot PermissionRequest approval hook installed:\n%s", data)
+	}
+	for _, entry := range settings.Hooks.PreToolUse {
+		for _, h := range entry.Hooks {
+			if strings.HasSuffix(h.Command, "pilot approve") {
+				t.Fatalf("Pilot approval must not run before Claude auto mode:\n%s", data)
+			}
+		}
 	}
 
 	re, err := regexp.Compile(matcher)
@@ -200,6 +211,14 @@ func TestUninstallAllRemovesOnlyPilotHooks(t *testing.T) {
 	}
 	if !strings.Contains(string(codexData), "/usr/bin/true") {
 		t.Fatalf("non-Pilot Codex hook was removed:\n%s", codexData)
+	}
+
+	claudeData, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(claudeData), "pilot approve") {
+		t.Fatalf("Claude Pilot approval hook not removed:\n%s", claudeData)
 	}
 }
 
