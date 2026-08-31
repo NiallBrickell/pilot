@@ -89,7 +89,12 @@ var dangerCommandRes = []*regexp.Regexp{
 	regexp.MustCompile(`\b(?:drop\s+(?:table|database|schema)|truncate\b|delete\s+from\b|update\s+\S+\s+set\b)`),
 	regexp.MustCompile(`\bpsql\b[^\n;&|]*(?:\s-f\s|--file\b|\\i\b|\\o\b|\\copy\b)`),
 	regexp.MustCompile(`\b(?:redis-cli\s+)?(?:flushall|flushdb)\b`),
-	regexp.MustCompile(`\b(?:railway\s+delete|fly\s+destroy|kubectl\s+delete|vercel\s+(?:rm|env\s+rm)|terraform\s+destroy|encore\s+secret\s+delete)\b`),
+	// Hosted-resource deletion. Global flags routinely sit between the binary
+	// and the verb (`terraform -chdir=infra destroy`, `kubectl -n prod delete`,
+	// `fly -a app destroy`), so the verb is matched anywhere in the same
+	// command rather than adjacent to the binary. Over-matching only costs an
+	// evaluator call; under-matching approved a destroy locally.
+	regexp.MustCompile(`\b(?:railway|fly|flyctl|kubectl|vercel|terraform|encore)\b[^\n;&|]*\b(?:delete|destroy|rm)\b`),
 	regexp.MustCompile(`\bterraform\b[^\n;&|]*\bapply\b[^\n;&|]*-auto-approve\b`),
 	regexp.MustCompile(`\bdocker\b[^\n;&|]*\brm\b[^\n;&|]*(?:-[a-z]*f[a-z]*\b|--force\b)`),
 	regexp.MustCompile(`(?:-x\s*|--request\s+)delete\b|["'](?:method|http_method)["']\s*:\s*["']delete["']`),

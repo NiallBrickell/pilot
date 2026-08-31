@@ -1,4 +1,4 @@
-.PHONY: build start stop dev clean dashboard dashboard-dev dashboard-build replay release
+.PHONY: build start stop dev clean dashboard dashboard-dev dashboard-build replay live release
 
 build:
 	go build -o pilot .
@@ -13,6 +13,14 @@ replay:
 	PILOT_REPLAY_REQUIRE_KEY=1 go test -tags=replay ./internal/config \
 		-run TestReplayAgainstEvaluator -v -count=1 -timeout 10m
 
+# Drive a real Claude Code session (isolated CLAUDE_CONFIG_DIR, scratch
+# PILOT_HOME and serve) through the auto-mode classifier with a freshly built
+# binary. The replay suite covers Pilot's own layers; this is the only check
+# that sees which hooks Claude Code actually fires. Needs `claude` on PATH
+# and an Anthropic key; costs a few cents per case.
+live:
+	PILOT_LIVE_REQUIRE=1 go test -tags=live ./internal/livetest -v -count=1 -timeout 20m
+
 # make release VERSION=v0.1.29 — verify, then tag and push so release.yml
 # publishes the binaries that `pilot upgrade` pulls.
 release:
@@ -21,6 +29,7 @@ release:
 	@git rev-parse -q --verify "refs/tags/$(VERSION)" >/dev/null && { echo "tag $(VERSION) already exists"; exit 1; } || true
 	go test ./...
 	$(MAKE) replay
+	$(MAKE) live
 	git tag $(VERSION)
 	git push origin main
 	git push origin $(VERSION)

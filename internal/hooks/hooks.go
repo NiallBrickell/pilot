@@ -32,8 +32,10 @@ func CheckInstalled() Status {
 
 	if data, err := os.ReadFile(st.ClaudeSettingsPath); err == nil {
 		st.ClaudeInstalled = hookEventContains(data, "PermissionRequest", "pilot approve") &&
-			(!cfg.General.IsInterrogationEnabled() || hookEventContains(data, "PreToolUse", "pilot interrogate")) &&
-			(!cfg.General.StopHookReplies || hookEventContains(data, "Stop", "pilot on-stop"))
+			hookEventContains(data, "PermissionDenied", "pilot on-denied") &&
+			hookEventContains(data, "PreToolUse", "pilot pre-approve") &&
+			hookEventContains(data, "Stop", "pilot on-stop") &&
+			(!cfg.General.IsInterrogationEnabled() || hookEventContains(data, "PreToolUse", "pilot interrogate"))
 	}
 
 	if data, err := os.ReadFile(st.CodexHooksPath); err == nil {
@@ -122,28 +124,52 @@ func InstallClaude(pilotBin string) error {
 		},
 	)
 
-	// Remove the old approval hook during upgrades. PreToolUse is retained only
-	// for the explicitly enabled trajectory/interrogation check.
+	// Auto mode's classifier denies without prompting, so PermissionRequest
+	// never sees those calls. PermissionDenied is Claude Code's only hook for a
+	// classifier denial: Pilot evaluates the call there, stores its decision,
+	// and asks the model to retry. The retry is then settled by the PreToolUse
+	// entry below ("allow" bypasses the classifier; "ask" routes to
+	// PermissionRequest and the user's prompt). Catch-all matchers keep new
+	// tool names covered.
+	hooks["PermissionDenied"] = mergeHookEntries(hooks["PermissionDenied"],
+		map[string]any{
+			"matcher": ".*",
+			"hooks": []any{
+				map[string]any{"type": "command", "command": pilotBin + " on-denied"},
+			},
+		},
+	)
+
+	// Remove the legacy full-evaluation approval hook during upgrades.
+	// PreToolUse carries only the retry lookup (cheap, no LLM) and, when
+	// explicitly enabled, the trajectory/interrogation check.
 	removePilotHookEntries(hooks, "PreToolUse")
+	preToolUse := []map[string]any{{
+		"matcher": ".*",
+		"hooks": []any{
+			map[string]any{"type": "command", "command": pilotBin + " pre-approve"},
+		},
+	}}
 	if cfg.General.IsInterrogationEnabled() {
-		hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], map[string]any{
+		preToolUse = append(preToolUse, map[string]any{
 			"matcher": ".*",
 			"hooks": []any{
 				map[string]any{"type": "command", "command": pilotBin + " interrogate"},
 			},
 		})
 	}
-	if cfg.General.StopHookReplies {
-		hooks["Stop"] = mergeHookEntries(hooks["Stop"],
-			map[string]any{
-				"hooks": []any{
-					map[string]any{"type": "command", "command": pilotBin + " on-stop"},
-				},
+	hooks["PreToolUse"] = mergeHookEntries(hooks["PreToolUse"], preToolUse...)
+
+	// The Stop hook always runs: it sends a model that gave up on a
+	// classifier-denied call back to retry it (deterministic, no LLM). The
+	// LLM-backed keep-going evaluation inside it stays behind stop_hook_replies.
+	hooks["Stop"] = mergeHookEntries(hooks["Stop"],
+		map[string]any{
+			"hooks": []any{
+				map[string]any{"type": "command", "command": pilotBin + " on-stop"},
 			},
-		)
-	} else {
-		removePilotHookEntries(hooks, "Stop")
-	}
+		},
+	)
 
 	settings["hooks"] = hooks
 	data, err := json.MarshalIndent(settings, "", "  ")
@@ -173,7 +199,7 @@ func UninstallClaude() error {
 		return nil
 	}
 
-	for _, key := range []string{"PreToolUse", "PermissionRequest", "Stop"} {
+	for _, key := range []string{"PreToolUse", "PermissionRequest", "PermissionDenied", "Stop"} {
 		removePilotHookEntries(hooks, key)
 	}
 
@@ -345,6 +371,8 @@ func removePilotHookEntries(hooks map[string]any, key string) {
 
 func isPilotHookEntry(entryJSON string) bool {
 	return strings.Contains(entryJSON, "pilot approve") ||
+		strings.Contains(entryJSON, "pilot on-denied") ||
+		strings.Contains(entryJSON, "pilot pre-approve") ||
 		strings.Contains(entryJSON, "pilot interrogate") ||
 		strings.Contains(entryJSON, "pilot on-stop") ||
 		strings.Contains(entryJSON, "pilot codex-approve") ||

@@ -29,6 +29,7 @@ import (
 type Server struct {
 	broker                  *Broker
 	pending                 *PendingStore
+	retries                 *RetryStore
 	port                    int
 	srv                     *http.Server
 	evalSem                 chan struct{} // semaphore to limit concurrent approval evaluations
@@ -101,6 +102,7 @@ func New(cfg *config.PilotConfig) *Server {
 	return &Server{
 		broker:                  broker,
 		pending:                 NewPendingStore(),
+		retries:                 NewRetryStore(),
 		port:                    port,
 		evalSem:                 make(chan struct{}, maxConcurrent),
 		idleSem:                 make(chan struct{}, 2),
@@ -108,7 +110,7 @@ func New(cfg *config.PilotConfig) *Server {
 		interrogationConfidence: interrogationConf,
 		interrogationModel:      interrogationModel,
 		interrogationEnabled:    interrogationEnabled,
-		serverToken:             os.Getenv("PILOT_SERVER_TOKEN"),
+		serverToken:             config.ServerToken(),
 	}
 }
 
@@ -144,6 +146,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/approve/", s.handleApprove)
 	mux.HandleFunc("/reject/", s.handleReject)
 	mux.HandleFunc("/internal/evaluate", s.handleEvaluate)
+	mux.HandleFunc("/internal/retry", s.handleInternalRetry)
 	mux.HandleFunc("/internal/interrogate", s.handleInterrogate)
 	mux.HandleFunc("/internal/evaluate-idle", s.handleEvaluateIdle)
 	mux.HandleFunc("/hooks/install", s.handleHooksInstall)
@@ -620,6 +623,71 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 		"cwd":         req.Cwd,
 		"session_id":  req.SessionID,
 	})
+}
+
+// handleInternalRetry is the hand-off between the hooks that see a Claude Code
+// auto-mode classifier denial and the hooks that see the model's retry.
+//
+//   - register: the PermissionDenied hook stores Pilot's decision for the call.
+//   - claim:    the PreToolUse / PermissionRequest hooks look the retry up.
+//   - nudge:    the Stop hook asks whether the model walked away from a call
+//     Pilot already decided, so it can tell the model to retry.
+func (s *Server) handleInternalRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Action    string `json:"action"`
+		Stage     string `json:"stage"`
+		SessionID string `json:"session_id"`
+		ToolName  string `json:"tool_name"`
+		ToolInput string `json:"tool_input"`
+		Decision  string `json:"decision"`
+		Reason    string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.SessionID == "" {
+		http.Error(w, "session_id required", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	switch req.Action {
+	case "register":
+		if req.Decision != RetryAllow && req.Decision != RetryAsk {
+			http.Error(w, "decision must be allow or ask", http.StatusBadRequest)
+			return
+		}
+		key := s.retries.Register(req.SessionID, req.ToolName, req.ToolInput, req.Decision, req.Reason)
+		slog.Debug("Retry registered", "session", req.SessionID, "tool", req.ToolName, "decision", req.Decision, "key", key[:8])
+		_ = json.NewEncoder(w).Encode(map[string]any{"registered": true, "key": key})
+	case "claim":
+		rec := s.retries.Claim(req.SessionID, req.ToolName, req.ToolInput, req.Stage)
+		if rec == nil {
+			_ = json.NewEncoder(w).Encode(map[string]any{"decision": ""})
+			return
+		}
+		slog.Debug("Retry claimed", "session", req.SessionID, "tool", req.ToolName, "stage", req.Stage, "decision", rec.Decision)
+		_ = json.NewEncoder(w).Encode(map[string]any{"decision": rec.Decision, "reason": rec.Reason})
+	case "nudge":
+		rec := s.retries.Nudge(req.SessionID)
+		if rec == nil {
+			_ = json.NewEncoder(w).Encode(map[string]any{"decision": ""})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"decision":   rec.Decision,
+			"reason":     rec.Reason,
+			"tool_name":  rec.ToolName,
+			"tool_input": rec.ToolInput,
+		})
+	default:
+		http.Error(w, "unknown action", http.StatusBadRequest)
+	}
 }
 
 // handleProfile returns aggregated evaluation timing stats.

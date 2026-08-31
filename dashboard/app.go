@@ -128,6 +128,12 @@ func (a *App) GetPilotStatus() pilot.PilotStatus {
 	return status
 }
 
+// GetServerToken returns the bearer the frontend must send on POST requests to
+// pilot serve (empty when the server runs unauthenticated).
+func (a *App) GetServerToken() string {
+	return pilot.ServerToken()
+}
+
 // InstallPilotHooks installs hooks and starts the server.
 func (a *App) InstallPilotHooks() error {
 	return pilot.InstallHooks()

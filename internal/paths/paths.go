@@ -32,6 +32,31 @@ func EnvFile() string            { return filepath.Join(PilotDir(), ".env") }
 func BinPathFile() string        { return filepath.Join(PilotDir(), "pilot-bin") }
 func PromptBaselineFile() string { return filepath.Join(PilotDir(), ".prompt_baseline") }
 
+// EnvFileValue returns KEY's value from ~/.pilot/.env ("" when absent). The
+// file is a plain KEY=value list; surrounding quotes are stripped.
+func EnvFileValue(key string) string {
+	data, err := os.ReadFile(EnvFile())
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(k) != key {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		if len(v) >= 2 && (v[0] == '"' && v[len(v)-1] == '"' || v[0] == '\'' && v[len(v)-1] == '\'') {
+			v = v[1 : len(v)-1]
+		}
+		return v
+	}
+	return ""
+}
+
 // BinDir is the stable directory for the installed pilot binary (used by
 // install.sh and `pilot upgrade`), independent of any source checkout.
 func BinDir() string { return filepath.Join(PilotDir(), "bin") }
@@ -174,12 +199,12 @@ func isShippedPrompt(hash string, shippedHashes []string) bool {
 type PromptsState string
 
 const (
-	PromptsUpToDate     PromptsState = "up_to_date"    // user == embedded
-	PromptsBehind       PromptsState = "behind"        // user == baseline, user != embedded
-	PromptsCustomised   PromptsState = "customised"    // user != baseline, user != embedded
-	PromptsBootstrapped PromptsState = "bootstrapped"  // no baseline recorded yet
-	PromptsNoConfig     PromptsState = "no_config"     // pilot.toml missing
-	PromptsParseError   PromptsState = "parse_error"   // couldn't parse user or embedded TOML
+	PromptsUpToDate     PromptsState = "up_to_date"   // user == embedded
+	PromptsBehind       PromptsState = "behind"       // user == baseline, user != embedded
+	PromptsCustomised   PromptsState = "customised"   // user != baseline, user != embedded
+	PromptsBootstrapped PromptsState = "bootstrapped" // no baseline recorded yet
+	PromptsNoConfig     PromptsState = "no_config"    // pilot.toml missing
+	PromptsParseError   PromptsState = "parse_error"  // couldn't parse user or embedded TOML
 )
 
 // PromptsStatus is the comparison between user prompts and embedded defaults.

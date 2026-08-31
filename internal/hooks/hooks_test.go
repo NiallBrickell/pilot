@@ -376,3 +376,111 @@ func TestInstallAllOmitsInterrogationHooksWhenDisabled(t *testing.T) {
 		t.Fatalf("Codex PreToolUse trust state should be omitted when interrogation is disabled:\n%s", configData)
 	}
 }
+
+// TestClaudeInstallsClassifierDenialFallback pins the three-hook contract
+// that lets Pilot act after Claude auto mode's classifier denies a call:
+// PermissionDenied evaluates and asks for a retry, PreToolUse settles the
+// retry, Stop sends a model that gave up back to it. The Stop entry must be
+// present even with LLM keep-going replies disabled, and a legacy PreToolUse
+// approval must be replaced rather than kept alongside.
+func TestClaudeInstallsClassifierDenialFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(home, "pilot.toml")
+	t.Setenv("PILOT_CONFIG", configPath)
+	if err := os.WriteFile(configPath, []byte("[general]\nstop_hook_replies = false\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"hooks":{"PreToolUse":[{"matcher":".*","hooks":[{"type":"command","command":"/old/pilot approve"}]},{"matcher":"Bash","hooks":[{"type":"command","command":"/usr/bin/true"}]}]}}`
+	if err := os.WriteFile(path, []byte(legacy), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := InstallClaude("/tmp/pilot"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Hooks map[string][]struct {
+			Matcher string `json:"matcher"`
+			Hooks   []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	commands := func(event string) []string {
+		var out []string
+		for _, entry := range settings.Hooks[event] {
+			for _, h := range entry.Hooks {
+				out = append(out, h.Command)
+			}
+		}
+		return out
+	}
+	want := map[string]string{
+		"PermissionRequest": "/tmp/pilot approve",
+		"PermissionDenied":  "/tmp/pilot on-denied",
+		"PreToolUse":        "/tmp/pilot pre-approve",
+		"Stop":              "/tmp/pilot on-stop",
+	}
+	for event, cmd := range want {
+		found := false
+		for _, c := range commands(event) {
+			if c == cmd {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s missing %q:\n%s", event, cmd, data)
+		}
+	}
+	for _, c := range commands("PreToolUse") {
+		if c == "/old/pilot approve" {
+			t.Fatalf("legacy PreToolUse approval survived the install:\n%s", data)
+		}
+	}
+	if cmds := commands("PreToolUse"); len(cmds) != 2 || cmds[0] != "/usr/bin/true" {
+		t.Fatalf("user's own PreToolUse hook must be preserved ahead of Pilot's, got %v", cmds)
+	}
+	for _, event := range []string{"PermissionDenied", "PreToolUse"} {
+		for _, entry := range settings.Hooks[event] {
+			for _, h := range entry.Hooks {
+				if strings.HasPrefix(h.Command, "/tmp/pilot") && entry.Matcher != ".*" {
+					t.Fatalf("%s Pilot entry must be catch-all, got matcher %q", event, entry.Matcher)
+				}
+			}
+		}
+	}
+
+	if st := CheckInstalled(); !st.ClaudeInstalled {
+		t.Fatalf("fresh install not detected: %+v", st)
+	}
+
+	// Yesterday's shape — PermissionRequest only — is exactly the install that
+	// let classifier denials fall on the floor; it must read as stale.
+	stale := `{"hooks":{"PermissionRequest":[{"matcher":".*","hooks":[{"type":"command","command":"/tmp/pilot approve"}]}]}}`
+	if err := os.WriteFile(path, []byte(stale), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if st := CheckInstalled(); st.ClaudeInstalled {
+		t.Fatalf("PermissionRequest-only install must not count as installed: %+v", st)
+	}
+
+	if err := UninstallClaude(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	if strings.Contains(string(data), "pilot ") {
+		t.Fatalf("uninstall left Pilot hooks behind:\n%s", data)
+	}
+}

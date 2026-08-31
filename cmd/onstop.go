@@ -1,18 +1,15 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"fmt"
 
-	"github.com/NiallBrickell/pilot/internal/auth"
 	"github.com/NiallBrickell/pilot/internal/config"
 	"github.com/NiallBrickell/pilot/internal/state"
 	"github.com/NiallBrickell/pilot/internal/transcript"
@@ -43,15 +40,26 @@ func runOnStopForRuntime(runtime hookRuntime) error {
 	state.WriteLog("debug", "on-stop", fmt.Sprintf("hook fired, input length: %d bytes", len(input)))
 
 	cfg := config.Load()
-	if !cfg.General.StopHookReplies {
-		state.WriteLog("debug", "on-stop", "skipped: stop hook replies disabled")
-		return nil
-	}
 
 	var hookData map[string]any
 	if err := json.Unmarshal(input, &hookData); err != nil {
 		state.WriteLog("warn", "on-stop", "failed to parse hook input: "+err.Error())
 		hookData = map[string]any{}
+	}
+
+	// A Claude session that stops right after the auto-mode classifier blocked
+	// a call may have ignored the "you may retry" note. If Pilot already decided
+	// that call, send the model back to it. This is deterministic and free, so
+	// it runs even when the LLM-backed keep-going nudges are disabled.
+	if runtime == runtimeClaude {
+		if blocked := nudgeClassifierRetry(cfg, hookData); blocked {
+			return nil
+		}
+	}
+
+	if !cfg.General.StopHookReplies {
+		state.WriteLog("debug", "on-stop", "skipped: stop hook replies disabled")
+		return nil
 	}
 
 	// Log all keys received so we can debug field names
@@ -70,11 +78,6 @@ func runOnStopForRuntime(runtime hookRuntime) error {
 	sessionID, _ := hookData["session_id"].(string)
 	if sessionID == "" {
 		sessionID, _ = hookData["turn_id"].(string)
-	}
-
-	if runtime == runtimeClaude && !auth.IsClaudeAuthed() {
-		state.WriteLog("debug", "on-stop", "skipped: claude not authenticated")
-		return nil
 	}
 
 	state.WriteLog("debug", "on-stop", fmt.Sprintf("transcript=%q lastMsg=%d chars cwd=%q session=%q",
@@ -117,9 +120,8 @@ func evaluateIdleViaServer(cfg *config.PilotConfig, context, cwd, sessionID stri
 		"session_id":         sessionID,
 	})
 
-	client := &http.Client{Timeout: 15 * time.Second}
 	state.WriteLog("debug", "on-stop", fmt.Sprintf("posting to %s/internal/evaluate-idle", config.SSEBaseURL(cfg)))
-	resp, err := client.Post(config.SSEBaseURL(cfg)+"/internal/evaluate-idle", "application/json", bytes.NewReader(body))
+	resp, err := postServe(cfg, "/internal/evaluate-idle", body, 15*time.Second)
 	if err != nil {
 		state.WriteLog("error", "on-stop", "serve not reachable: "+err.Error())
 		return false
@@ -261,4 +263,39 @@ func truncateStr(s string, max int) string {
 		return s
 	}
 	return s[:max]
+}
+
+// nudgeClassifierRetry blocks the stop with a retry instruction when pilot
+// serve holds an unclaimed decision for this session. Returns true when a
+// block decision was printed.
+func nudgeClassifierRetry(cfg *config.PilotConfig, hookData map[string]any) bool {
+	sessionID, _ := hookData["session_id"].(string)
+	if sessionID == "" {
+		return false
+	}
+	rec := retryRequest(cfg, map[string]any{"action": "nudge", "session_id": sessionID}, 1500*time.Millisecond)
+	if rec == nil {
+		return false
+	}
+
+	summary := toolSummary(rec.ToolName, rec.ToolInput)
+	var reason string
+	switch rec.Decision {
+	case retryAllow:
+		reason = fmt.Sprintf("Pilot reviewed the tool call that Claude Code's auto-mode classifier blocked (%s) and approved it: %s. Retry that exact tool call now — it will be allowed — then continue the task.", summary, rec.Reason)
+	default:
+		reason = fmt.Sprintf("Pilot routed the tool call that Claude Code's auto-mode classifier blocked (%s) to the user for confirmation. Retry that exact tool call now so the user is prompted, then continue the task.", summary)
+	}
+	state.WriteLog("info", "on-stop", fmt.Sprintf("nudging retry of %s (%s)", summary, rec.Decision))
+	confidence := 1.0
+	_ = state.RecordAction(state.PilotAction{
+		Timestamp:  time.Now().UTC(),
+		ActionType: state.AutoRespond,
+		Detail:     "retry after auto-mode classifier denial: " + summary,
+		Confidence: &confidence,
+		Source:     "retry",
+		SessionID:  sessionID,
+	})
+	printJSON(map[string]any{"decision": "block", "reason": reason})
+	return true
 }

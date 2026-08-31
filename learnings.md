@@ -20,7 +20,28 @@ We went through four iterations:
 
 ## Runtime-first approval hierarchy
 
-Claude `PreToolUse` hooks fire before permission rules and the Auto-mode classifier. Putting Pilot approval there caused every tool call to reach Pilot first: 43,909 direct Haiku approval calls and $125.28 in one month. Approval must run on `PermissionRequest`, after the runtime has decided it needs external help. `PreToolUse` is only for opt-in trajectory guards.
+Claude `PreToolUse` hooks fire before permission rules and the Auto-mode classifier. Putting Pilot approval there caused every tool call to reach Pilot first: 43,909 direct Haiku approval calls and $125.28 in one month. Approval must run on `PermissionRequest`, after the runtime has decided it needs external help. `PreToolUse` carries only a local retry lookup and the opt-in trajectory guard.
+
+### Auto mode's classifier never prompts, so PermissionRequest never sees its denials
+
+Moving approval to `PermissionRequest` alone (30 Aug 2026) looked right and did nothing for the case that mattered: when the auto-mode classifier blocks a call it denies outright, feeds the model "Permission for this action was denied by the Claude Code auto mode classifier … STOP and explain to the user", and no permission prompt — hence no `PermissionRequest` hook — ever happens. Pilot's DB showed zero Claude-side entries for the blocked `terraform apply`; the agent simply handed the command back to the human. Claude Code only falls back to prompting after 3 consecutive (or 20 total) classifier blocks, and those thresholds are not configurable.
+
+What the runtime does offer (verified against Claude Code 2.1.251 with an isolated `CLAUDE_CONFIG_DIR`, an `autoMode.hard_deny` rule as a deterministic classifier trigger, and `--debug-file` to watch classifier calls):
+
+- `PermissionDenied` fires after a classifier denial with `tool_name`, `tool_input`, `tool_use_id`, `reason`. Its only output is `hookSpecificOutput.retry: true`, which appends "The PermissionDenied hook indicated you may retry this tool call." The denial itself is not reversed and the retry goes through the classifier again unless something else decides first.
+- A `PreToolUse` hook answering `allow` on the retry is honoured ahead of the classifier (`permissionDecisionMs=5`, no classifier request). Answering `ask` skips the classifier too and goes straight to the permission prompt — `PermissionRequest` hooks fire for it — in interactive sessions; in `claude -p` an `ask` is converted to a denial and neither prompt nor `PermissionDenied` fires again.
+- The model retries after the note only about half the time; the classifier's "STOP and explain" text usually wins. A `Stop` hook that blocks with an explicit "retry that exact call now" instruction made it reliable.
+
+So the fallback is three hooks sharing one in-memory record in `pilot serve` (`/internal/retry`): `on-denied` evaluates and stores allow/ask, `pre-approve` claims it on the retry, `on-stop` nudges a session that gave up. Records are per session, keyed on the tool input minus Bash's free-text `description`, one-shot, and expire after ten minutes, so a changed command is evaluated afresh and nothing can loop: a classifier re-denial of a changed command goes back through `on-denied`, a human rejection prints nothing, and Claude's own consecutive-denial limit still applies.
+
+Building the harness surfaced three more integration faults that the replay and unit suites were structurally unable to see, all fixed the same day:
+
+- **Server token.** `PILOT_SERVER_TOKEN` made `pilot serve` reject every hook POST with 401 — the hooks never sent a bearer, and the token sat unused in `~/.pilot/.env` because only the process environment was read. Hooks run in Claude Code's environment, not the server's, so both sides now resolve the token from env-then-`.env` (`config.ServerToken`), every CLI POST goes through `postServe`, and the dashboard's approve/reject fetches carry it via a `GetServerToken` binding.
+- **Headless sessions.** `claude -p` hands hooks `CLAUDE_CODE_ENTRYPOINT=sdk-cli` and turns a PreToolUse "ask" straight into a denial. Retrying a Pilot-denied call there just produced a second denial; `on-denied` now leaves the classifier's denial standing in headless sessions and only retries approvals.
+- **Auth probe.** Hooks gated on `claude auth status`, which reports logged-out whenever the hook's environment lacks the credential Claude Code itself is using. A hook only runs because Claude Code is running, so the probe protected nothing and silently disabled Pilot; it stays only in `pilot wrap`.
+- **Flag-tolerant danger markers.** `terraform -chdir=infra destroy` approved locally because the marker required the verb next to the binary; the hosted-resource pattern now matches the verb anywhere in the command, like the git/gh patterns already did.
+
+The lesson is about test altitude: every one of these lived in the contract between Claude Code and the hook processes, which no test exercised. `make live` (`internal/livetest`, `-tags=live`) now drives real `claude -p` sessions against a freshly built binary and scratch serve — local and token mode, allow and headless-deny paths — and gates releases with the replay suite.
 
 Within Pilot's residual permission-request path, we went through several settings-matching iterations:
 
@@ -71,6 +92,8 @@ accounting.
 Each hook invocation = one OS process spawn + one HTTP roundtrip to serve.
 
 - **approve**: `PermissionRequest` with `".*"` — Claude Auto mode and native permission rules resolve routine calls before this hook runs.
+- **on-denied**: `PermissionDenied` with `".*"` — fires only when the auto-mode classifier blocked a call; evaluates it and stores the retry decision.
+- **pre-approve**: `PreToolUse` with `".*"` — one local HTTP lookup per tool call, answers only for a stored retry.
 - **interrogate**: `".*"` — fires on every tool call. Server-side cadence logic (1st, 5th, every 25th per user turn) short-circuits most calls immediately. Keeping the broad matcher preserves full visibility into off-track behaviour.
 
 The dashboard must not maintain its own hook installer. A CLI migration moved

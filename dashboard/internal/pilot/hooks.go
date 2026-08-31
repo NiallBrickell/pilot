@@ -34,10 +34,15 @@ func codexConfigPath() string {
 // CheckHooksInstalled is deliberately event-aware. A legacy Pilot approval in
 // Claude's PreToolUse event is not a healthy install: it runs before Claude Auto
 // Mode and was the source of the prompts this dashboard is meant to prevent.
+// An install without the PermissionDenied fallback is stale too: auto mode's
+// classifier denies without prompting, so PermissionRequest alone never sees
+// those calls.
 func CheckHooksInstalled() HookStatus {
 	claudePath := claudeSettingsPath()
 	codexPath := codexHooksPath()
 	installed := hookEventContains(claudePath, "PermissionRequest", "pilot approve") &&
+		hookEventContains(claudePath, "PermissionDenied", "pilot on-denied") &&
+		hookEventContains(claudePath, "PreToolUse", "pilot pre-approve") &&
 		hookEventContains(codexPath, "PermissionRequest", "pilot codex-approve") &&
 		codexConfigHealthy(codexConfigPath())
 	return HookStatus{Installed: installed, SettingsPath: claudePath + " / " + codexPath}

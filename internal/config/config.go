@@ -113,6 +113,18 @@ func StateFilePath() string {
 	return paths.StateFile()
 }
 
+// ServerToken is the bearer token that protects pilot serve's POST routes. It
+// comes from PILOT_SERVER_TOKEN in the environment or from ~/.pilot/.env, so
+// the server and every hook process — which Claude Code spawns with its own
+// environment, not the server's — resolve the same value. Empty means the
+// server accepts unauthenticated local requests.
+func ServerToken() string {
+	if t := os.Getenv("PILOT_SERVER_TOKEN"); t != "" {
+		return t
+	}
+	return paths.EnvFileValue("PILOT_SERVER_TOKEN")
+}
+
 func SSEBaseURL(cfg *PilotConfig) string {
 	port := cfg.General.SSEPort
 	if port == 0 {

@@ -31,7 +31,21 @@ func TestLegacyClaudeApprovalIsNotHealthyInstall(t *testing.T) {
 		t.Fatal("legacy PreToolUse approval must not count as a healthy install")
 	}
 
-	canonical := `{"hooks":{"PermissionRequest":[{"matcher":".*","hooks":[{"type":"command","command":"/tmp/pilot approve"}]}]}}`
+	// A PermissionRequest-only Claude install (the shape before the
+	// PermissionDenied fallback) never sees auto-mode classifier denials.
+	requestOnly := `{"hooks":{"PermissionRequest":[{"matcher":".*","hooks":[{"type":"command","command":"/tmp/pilot approve"}]}]}}`
+	if err := os.WriteFile(claudePath, []byte(requestOnly), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !HooksNeedRepair() {
+		t.Fatal("PermissionRequest-only Claude install did not trigger repair")
+	}
+
+	canonical := `{"hooks":{
+		"PermissionRequest":[{"matcher":".*","hooks":[{"type":"command","command":"/tmp/pilot approve"}]}],
+		"PermissionDenied":[{"matcher":".*","hooks":[{"type":"command","command":"/tmp/pilot on-denied"}]}],
+		"PreToolUse":[{"matcher":".*","hooks":[{"type":"command","command":"/tmp/pilot pre-approve"}]}],
+		"Stop":[{"hooks":[{"type":"command","command":"/tmp/pilot on-stop"}]}]}}`
 	if err := os.WriteFile(claudePath, []byte(canonical), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -64,5 +78,24 @@ trusted_hash = "sha256:abc123"
 	}
 	if !HooksNeedRepair() {
 		t.Fatal("stale Codex feature config did not trigger repair")
+	}
+}
+
+func TestServerTokenReadsEnvThenEnvFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PILOT_HOME", home)
+	t.Setenv("PILOT_SERVER_TOKEN", "")
+	if got := ServerToken(); got != "" {
+		t.Fatalf("no token configured, got %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".env"), []byte("ANTHROPIC_API_KEY=x\nPILOT_SERVER_TOKEN='file-token'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ServerToken(); got != "file-token" {
+		t.Fatalf("token from .env not read, got %q", got)
+	}
+	t.Setenv("PILOT_SERVER_TOKEN", "env-token")
+	if got := ServerToken(); got != "env-token" {
+		t.Fatalf("environment must win, got %q", got)
 	}
 }

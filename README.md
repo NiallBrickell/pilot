@@ -5,10 +5,11 @@ AI copilot for Claude Code and Codex sessions — auto-approves safe tool calls,
 ## What it does
 
 1. **Runtime-first approval** — Claude Auto mode and Codex's own permission flow decide routine calls first. Only real permission requests reach Pilot's settings → deterministic danger boundary → Haiku fallback.
-2. **Escalation** — dangerous calls are held for human approval via dashboard, webhook, or future TUI. If no response arrives before timeout, Claude prompts normally and Codex PermissionRequest hooks decline to decide.
-3. **Idle detection** — when an agent stops unnecessarily, Haiku evaluates the transcript and auto-responds with context-aware nudges like "run the tests" or "keep going".
-4. **Interrogation** (opt-in) — periodically checks if the agent is still on track. If it's going in circles or ignoring instructions, pilot redirects it. Off by default; enable with `interrogation_enabled = true`.
-5. **Webhooks** — POST events to your own HTTP endpoints for custom integrations, dashboards, or logging.
+2. **Classifier-denial fallback** — when Claude's auto-mode classifier blocks a call (which it does silently, without prompting), Pilot evaluates that call through the same hierarchy and, if it approves, tells Claude to retry and lets the retry through. The agent no longer ends its turn with "the classifier won't let me run this, here's the command for you".
+3. **Escalation** — dangerous calls are held for human approval via dashboard, webhook, or future TUI. If no response arrives before timeout, Claude prompts normally and Codex PermissionRequest hooks decline to decide.
+4. **Idle detection** — when an agent stops unnecessarily, Haiku evaluates the transcript and auto-responds with context-aware nudges like "run the tests" or "keep going".
+5. **Interrogation** (opt-in) — periodically checks if the agent is still on track. If it's going in circles or ignoring instructions, pilot redirects it. Off by default; enable with `interrogation_enabled = true`.
+6. **Webhooks** — POST events to your own HTTP endpoints for custom integrations, dashboards, or logging.
 
 ## How this compares to Claude Code's auto mode
 
@@ -49,8 +50,9 @@ Pilot is for driving a fleet, not for being a better approver in one window.
 Claude Code / Codex session (any of 20+)
     │
     ├─ Native auto/permission decision
-    │       └─ PermissionRequest only ──→ pilot approve / pilot codex-approve
-    │                         │
+    │       ├─ PermissionRequest ──→ pilot approve / pilot codex-approve
+    │       └─ PermissionDenied ──→ pilot on-denied   (Claude auto-mode classifier blocked it)
+    │                         │        └─ approved → "retry"; pilot pre-approve lets the retry through
     │                         POST to pilot serve
     │                         ├─ Layer 1: runtime settings where available (no LLM)
     │                         ├─ Layer 2: routine call / danger-marker boundary (no LLM)
@@ -107,7 +109,23 @@ To stop: `make stop` (or `./pilot stop`). This removes hooks and kills the serve
 
 ### Hook flow
 
-For Claude Code, Pilot installs approval handling on `PermissionRequest`, not `PreToolUse`. Claude's permission rules and Auto-mode classifier therefore decide ordinary calls first. Pilot runs only when Claude Code is about to request an external permission decision. Optional trajectory checks still use `PreToolUse` because they are guards rather than approvals.
+For Claude Code, Pilot installs approval handling on `PermissionRequest`, not as a `PreToolUse` evaluation. Claude's permission rules and Auto-mode classifier therefore decide ordinary calls first. Pilot evaluates only when Claude Code is about to request an external permission decision. Optional trajectory checks still use `PreToolUse` because they are guards rather than approvals.
+
+Auto mode's classifier does not prompt when it blocks a call: it denies, tells the model to try something else, and no `PermissionRequest` ever fires. Left alone, the agent ends its turn with "the classifier won't let me run this — here is the command for you". Claude Code's only hook for that moment is `PermissionDenied`, so Pilot installs three cooperating hooks:
+
+- **`PermissionDenied` → `pilot on-denied`** runs the classifier-blocked call through Pilot's full hierarchy (settings → deterministic boundary → Haiku → dashboard escalation). If Pilot or a human approves, it stores that decision for the session and answers `retry: true`, which tells the model it may retry the call. If nobody answers before the escalation timeout, or Pilot cannot evaluate, it stores "ask" instead. A human rejection, or a `permissions.deny` rule, leaves the classifier's denial standing.
+- **`PreToolUse` → `pilot pre-approve`** is a cheap local lookup on every tool call (no LLM). When the model retries a call Pilot stored, it answers `allow` — which Claude Code honours ahead of the classifier, so the retry runs without another classifier pass — or `ask`, which forces Claude's own permission prompt for the retry. For every other call it prints nothing and Claude's normal flow proceeds.
+- **`Stop` → `pilot on-stop`** always checks whether the session walked away from a call Pilot already decided (the model does not always act on the retry note) and, once per call, sends it back to retry. That check is deterministic; the LLM-backed keep-going nudges remain behind `stop_hook_replies`.
+
+When the retry reaches `PermissionRequest` with a stored "ask", `pilot approve` stands aside instead of evaluating twice, so Claude shows its own prompt — the same fallback a timed-out `PermissionRequest` escalation gets. Stored decisions are one-shot, per session, keyed on the exact tool input (a rewritten Bash `description` still matches), and expire after ten minutes.
+
+Headless sessions (`claude -p`, which Claude Code marks with `CLAUDE_CODE_ENTRYPOINT=sdk-cli`) have no prompt to route to: a hook "ask" there is turned straight into a denial. So in headless sessions Pilot only asks for a retry when it can approve the call; when it wants a human, the classifier's denial stands and the escalation is still recorded.
+
+Hooks no longer probe `claude auth status` before acting: a hook only runs because Claude Code is already running, and the probe had disabled Pilot silently on API-key and helper-based setups where the check could not see the credential.
+
+### Verifying the integration
+
+`go test ./...` pins what each hook prints for a given server answer. `make replay` runs the recorded corpus through Pilot's own layers and the live evaluator. Neither runs Claude Code, and the hook contract — which events fire, in what order, with which environment — is where integrations have broken while both stayed green. `make live` closes that gap: it builds the binary, starts a scratch `pilot serve`, and drives real `claude -p` sessions in an isolated `CLAUDE_CONFIG_DIR` through the auto-mode classifier (a `hard_deny` rule on a marker token makes the block deterministic), in local and token mode, asserting the blocked call actually ran and that Pilot recorded why. It needs `claude` on PATH and an Anthropic key, costs a few cents, and gates `make release` alongside the replay suite.
 
 For Codex, Pilot installs `PreToolUse` trajectory-check hooks plus `PermissionRequest` approval hooks for `Bash`, `apply_patch`/`Edit`/`Write`, and MCP tools. It also enables Codex's `exec_permission_approvals` and `request_permissions_tool` feature flags so sandbox/network escalation prompts can flow through `PermissionRequest`. Codex `PreToolUse` can only block, so auto-approval happens in `PermissionRequest`. The trajectory-check hook is off by default; set `interrogation_enabled = true` to enable it.
 
@@ -407,8 +425,11 @@ port-forward to `127.0.0.1:9721`; outbound webhooks remain the intended
 server-to-server integration.
 
 For a production process that shares the host with other workloads, set a
-high-entropy `PILOT_SERVER_TOKEN`. When it is non-empty, every POST request must
-carry the exact header `Authorization: Bearer <token>`. Pilot compares bearer
+high-entropy `PILOT_SERVER_TOKEN` — in the environment or in `~/.pilot/.env`.
+`pilot serve`, every hook command, and the dashboard resolve it the same way
+(environment first, then `.env`), which matters because Claude Code and Codex
+spawn hooks with their own environment, not the server's. When it is non-empty,
+every POST request must carry the exact header `Authorization: Bearer <token>`. Pilot compares bearer
 credentials in constant time and rejects a missing or invalid credential before
 the request body or route handler is reached. The read-only `/status`, `/events`,
 `/logs`, `/config`, and `/internal/profile` routes remain local and public.

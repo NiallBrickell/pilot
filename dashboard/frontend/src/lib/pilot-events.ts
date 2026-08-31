@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { getServerToken } from "./api";
 import type {
   PilotAction,
   PilotPendingApproval,
@@ -93,16 +94,33 @@ export function usePilotSSE(port: number, enabled: boolean) {
   return { connectionState, actions, pendingApprovals };
 }
 
+// pilot serve rejects every POST without this bearer when PILOT_SERVER_TOKEN
+// is configured; the SSE stream and status reads stay public.
+async function authHeaders(): Promise<HeadersInit> {
+  const token = await getServerToken().catch(() => "");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function postToServe(port: number, path: string): Promise<void> {
+  const res = await fetch(`http://localhost:${port}${path}`, {
+    method: "POST",
+    headers: await authHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(`pilot serve ${path}: HTTP ${res.status}`);
+  }
+}
+
 export async function approvePending(
   port: number,
   id: string
 ): Promise<void> {
-  await fetch(`http://localhost:${port}/approve/${id}`, { method: "POST" });
+  await postToServe(port, `/approve/${id}`);
 }
 
 export async function rejectPending(
   port: number,
   id: string
 ): Promise<void> {
-  await fetch(`http://localhost:${port}/reject/${id}`, { method: "POST" });
+  await postToServe(port, `/reject/${id}`);
 }

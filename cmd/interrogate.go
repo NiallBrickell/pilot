@@ -1,16 +1,13 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"time"
 
-	"github.com/NiallBrickell/pilot/internal/auth"
 	"github.com/NiallBrickell/pilot/internal/config"
 	"github.com/NiallBrickell/pilot/internal/paths"
 	"github.com/NiallBrickell/pilot/internal/state"
@@ -92,15 +89,6 @@ func runInterrogateForRuntime(runtime hookRuntime) error {
 		userMsgHash = lastUserMsgHash(transcriptPath)
 	}
 
-	if runtime == runtimeClaude && !auth.IsClaudeAuthed() {
-		return printJSON(hookResponse{
-			HookSpecificOutput: preToolUseOutput{
-				HookEventName:      "PreToolUse",
-				PermissionDecision: "allow",
-			},
-		})
-	}
-
 	result, ok := interrogateViaServer(cfg, toolName, toolInput, sessionCwd, sessionID, transcriptPath, userMsgHash)
 	if !ok {
 		// Serve not running — allow through silently
@@ -160,8 +148,7 @@ func interrogateViaServer(cfg *config.PilotConfig, toolName, toolInput, cwd, ses
 		"user_msg_hash":   userMsgHash,
 	})
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Post(config.SSEBaseURL(cfg)+"/internal/interrogate", "application/json", bytes.NewReader(body))
+	resp, err := postServe(cfg, "/internal/interrogate", body, 15*time.Second)
 	if err != nil {
 		slog.Debug("Serve not reachable for interrogation", "error", err)
 		return nil, false

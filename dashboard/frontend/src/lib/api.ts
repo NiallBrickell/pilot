@@ -12,6 +12,7 @@ declare global {
       main: {
         App: {
           GetPilotStatus(): Promise<PilotStatus>;
+          GetServerToken(): Promise<string>;
           InstallPilotHooks(): Promise<void>;
           UninstallPilotHooks(): Promise<void>;
           StartPilotWrapper(): Promise<void>;
@@ -67,4 +68,8 @@ export async function getPromptsStatus(): Promise<PromptsStatus> {
 
 export async function resetPrompts(): Promise<ResetPromptsResult> {
   return app().ResetPrompts();
+}
+
+export async function getServerToken(): Promise<string> {
+  return app().GetServerToken();
 }
