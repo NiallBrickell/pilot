@@ -73,7 +73,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 }
 
 func killStalePort(port int) {
-	out, err := exec.Command("lsof", fmt.Sprintf("-ti:%d", port)).Output()
+	// -sTCP:LISTEN: only match actual listeners. Without it lsof also matches
+	// outbound sockets whose ephemeral source port happens to equal ours
+	// (Tailscale's IPNExtension holds thousands), causing spurious
+	// "port in use" exits.
+	out, err := exec.Command("lsof", fmt.Sprintf("-ti:%d", port), "-sTCP:LISTEN").Output()
 	if err != nil || len(out) == 0 {
 		return
 	}
