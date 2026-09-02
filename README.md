@@ -115,7 +115,7 @@ Auto mode's classifier does not prompt when it blocks a call: it denies, tells t
 
 - **`PermissionDenied` → `pilot on-denied`** runs the classifier-blocked call through Pilot's full hierarchy (settings → deterministic boundary → Haiku → dashboard escalation). If Pilot or a human approves, it stores that decision for the session and answers `retry: true`, which tells the model it may retry the call. If nobody answers before the escalation timeout, or Pilot cannot evaluate, it stores "ask" instead. A human rejection, or a `permissions.deny` rule, leaves the classifier's denial standing.
 - **`PreToolUse` → `pilot pre-approve`** is a cheap local lookup on every tool call (no LLM). When the model retries a call Pilot stored, it answers `allow` — which Claude Code honours ahead of the classifier, so the retry runs without another classifier pass — or `ask`, which forces Claude's own permission prompt for the retry. For every other call it prints nothing and Claude's normal flow proceeds.
-- **`Stop` → `pilot on-stop`** always checks whether the session walked away from a call Pilot already decided (the model does not always act on the retry note) and, once per call, sends it back to retry. That check is deterministic; the LLM-backed keep-going nudges remain behind `stop_hook_replies`.
+- **`Stop` → `pilot on-stop`** checks whether the session walked away from a call Pilot already decided (the model does not always act on the retry note) and, once per call, sends it back to retry. The check is deterministic and free, but like the LLM-backed keep-going nudges it is gated behind `stop_hook_replies` — with replies disabled the Stop hook stays silent and an abandoned decision simply expires.
 
 When the retry reaches `PermissionRequest` with a stored "ask", `pilot approve` stands aside instead of evaluating twice, so Claude shows its own prompt — the same fallback a timed-out `PermissionRequest` escalation gets. Stored decisions are one-shot, per session, keyed on the exact tool input (a rewritten Bash `description` still matches), and expire after ten minutes.
 
@@ -218,7 +218,7 @@ All config lives in `~/.pilot/pilot.toml`. Created automatically on first run. E
 | `pending_response_max_age_s` | `30` | Discard stale pending responses (s) |
 | `grace_period_s` | `0` | Delay before auto-approvals take effect (0 = instant) |
 | `escalation_timeout_s` | `30` | Wait for human on escalated calls (s) |
-| `stop_hook_replies` | `true` | Allow Stop hooks to nudge agents to continue (all runtimes) |
+| `stop_hook_replies` | `true` | Allow Stop hooks to nudge agents (all runtimes, incl. classifier-retry nudges) |
 | `sse_port` | `9721` | SSE event stream port |
 | `max_concurrent_evals` | `4+2` | Max concurrent API calls (4 approval + 2 idle, separate semaphores) |
 | `evaluator_timeout_ms` | `15000` | Evaluator call timeout (ms) |

@@ -47,19 +47,20 @@ func runOnStopForRuntime(runtime hookRuntime) error {
 		hookData = map[string]any{}
 	}
 
+	if !cfg.General.StopHookReplies {
+		state.WriteLog("debug", "on-stop", "skipped: stop hook replies disabled")
+		return nil
+	}
+
 	// A Claude session that stops right after the auto-mode classifier blocked
 	// a call may have ignored the "you may retry" note. If Pilot already decided
-	// that call, send the model back to it. This is deterministic and free, so
-	// it runs even when the LLM-backed keep-going nudges are disabled.
+	// that call, send the model back to it. The check is deterministic and free,
+	// but it still speaks through the Stop hook, so stop_hook_replies gates it
+	// like every other stop-hook nudge (user request, 2026-09-02).
 	if runtime == runtimeClaude {
 		if blocked := nudgeClassifierRetry(cfg, hookData); blocked {
 			return nil
 		}
-	}
-
-	if !cfg.General.StopHookReplies {
-		state.WriteLog("debug", "on-stop", "skipped: stop hook replies disabled")
-		return nil
 	}
 
 	// Log all keys received so we can debug field names
